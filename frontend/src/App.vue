@@ -1,5 +1,6 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import PlannerDatePicker from './PlannerDatePicker.vue'
 import PlannerSelect from './PlannerSelect.vue'
 
 const tomorrow = new Date()
@@ -16,6 +17,14 @@ const entryKind = ref('task')
 const serverAvailable = ref(true)
 const isCheckingServer = ref(false)
 const tasks = ref([])
+const taskSearch = ref('')
+const taskTypeFilter = ref('all')
+const taskSort = ref('newest')
+const overdueOnly = ref(false)
+const taskFilterTrigger = ref(null)
+const taskFilterDialog = ref(null)
+const taskFiltersOpen = ref(false)
+const todayDate = ref(localDate(new Date()))
 const projects = ref([])
 const selectedProjectId = ref(null)
 const projectTaskDialog = ref(null)
@@ -80,10 +89,46 @@ const eligibleProjectTasks = computed(() => tasks.value.filter((task) =>
   && !selectedProject.value?.dependencies?.some((dependency) => dependency.id === task.id)))
 const filteredProjectTasks = computed(() => eligibleProjectTasks.value.filter((task) =>
   task.title.toLocaleLowerCase().includes(projectTaskSearch.value.trim().toLocaleLowerCase())))
+const hasTaskListFilters = computed(() => Boolean(
+  taskSearch.value.trim() || taskTypeFilter.value !== 'all' || taskSort.value !== 'newest' || overdueOnly.value,
+))
+const visibleTasks = computed(() => {
+  const search = taskSearch.value.trim().toLocaleLowerCase()
+  const priorityOrder = { high: 0, standard: 1, low: 2 }
+  const matchingTasks = tasks.value.filter((task) => {
+    if (taskTypeFilter.value !== 'all' && task.type !== taskTypeFilter.value) return false
+    if (overdueOnly.value && !isOverdue(task)) return false
+    if (!search) return true
+    return task.title.toLocaleLowerCase().includes(search)
+      || (task.description || '').toLocaleLowerCase().includes(search)
+  })
+
+  return matchingTasks.sort((first, second) => {
+    if (taskSort.value === 'priority') {
+      const order = (priorityOrder[first.priority] ?? 3) - (priorityOrder[second.priority] ?? 3)
+      if (order !== 0) return order
+    }
+
+    if (taskSort.value === 'deadline') {
+      const order = (first.deadline_on || '9999-12-31').localeCompare(second.deadline_on || '9999-12-31')
+      if (order !== 0) return order
+      if (first.deadline_on && first.deadline_is_hard !== second.deadline_is_hard) {
+        return first.deadline_is_hard ? -1 : 1
+      }
+    }
+
+    return second.id - first.id
+  })
+})
 const priorityOptions = [
   { value: 'low', label: 'Low' },
   { value: 'standard', label: 'Standard' },
   { value: 'high', label: 'High' },
+]
+const taskSortOptions = [
+  { value: 'newest', label: 'Newest first' },
+  { value: 'priority', label: 'High priority' },
+  { value: 'deadline', label: 'Due soonest' },
 ]
 const weekdayChoices = [
   { value: 1, short: 'Mon', name: 'Monday' },
@@ -180,6 +225,40 @@ function localDate(date) {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+function isOverdue(task) {
+  return Boolean(task.deadline_on && task.deadline_on < todayDate.value)
+}
+
+function resetTaskListView() {
+  taskSearch.value = ''
+  taskTypeFilter.value = 'all'
+  taskSort.value = 'newest'
+  overdueOnly.value = false
+}
+
+function openTaskFilters() {
+  if (!taskFilterDialog.value?.open) taskFilterDialog.value?.showModal()
+  taskFiltersOpen.value = true
+}
+
+function closeTaskFilters() {
+  taskFilterDialog.value?.close()
+}
+
+function clearTaskListFilters() {
+  resetTaskListView()
+  closeTaskFilters()
+}
+
+function onTaskFiltersClose() {
+  taskFiltersOpen.value = false
+  taskFilterTrigger.value?.focus({ preventScroll: true })
+}
+
+function refreshToday() {
+  todayDate.value = localDate(new Date())
 }
 
 function validDate(value) {
@@ -487,8 +566,9 @@ async function focusFirstError() {
     period_interval: countPeriodInput.value,
   }
   const target = targets[firstField]
-  target?.focus({ preventScroll: true })
-  target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  target?.focus?.({ preventScroll: true })
+  const targetElement = target?.$el || target
+  targetElement?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
 }
 
 function finishRepeatChoice() {
@@ -813,7 +893,17 @@ async function saveTask() {
   }
 }
 
-onMounted(checkServer)
+let todayRefreshInterval
+onMounted(() => {
+  checkServer()
+  refreshToday()
+  document.addEventListener('visibilitychange', refreshToday)
+  todayRefreshInterval = window.setInterval(refreshToday, 60_000)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', refreshToday)
+  window.clearInterval(todayRefreshInterval)
+})
 </script>
 
 <template>
@@ -891,13 +981,57 @@ onMounted(checkServer)
           <header class="collection-heading">
             <div class="collection-title">
               <h1>Tasks</h1>
-              <span v-if="!tasksLoading && !tasksError" class="collection-count">{{ tasks.length }}</span>
+              <span v-if="!tasksLoading && !tasksError" class="collection-count">{{ visibleTasks.length === tasks.length ? tasks.length : `${visibleTasks.length}/${tasks.length}` }}</span>
             </div>
             <button class="collection-add" type="button" @click="openTaskForm()">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
               <span>Add task</span>
             </button>
           </header>
+          <section v-if="tasks.length > 0" class="task-list-controls" aria-label="Find and sort tasks">
+            <label class="task-list-search">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="1.8" /><path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+              <span class="visually-hidden">Search task titles and descriptions</span>
+              <input v-model="taskSearch" type="search" placeholder="Search tasks" />
+            </label>
+            <button ref="taskFilterTrigger" class="task-filter-button" :class="{ 'is-active': taskTypeFilter !== 'all' || taskSort !== 'newest' }"
+              type="button" aria-label="Filter and sort tasks" aria-haspopup="dialog" :aria-expanded="taskFiltersOpen" @click="openTaskFilters">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M7 12h10m-7 5h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+              <span>Filter</span>
+              <span v-if="taskTypeFilter !== 'all' || taskSort !== 'newest'" class="task-filter-dot" aria-hidden="true"></span>
+            </button>
+            <button class="task-overdue-filter" type="button" :aria-pressed="overdueOnly" @click="overdueOnly = !overdueOnly">Overdue</button>
+          </section>
+          <dialog ref="taskFilterDialog" class="options-sheet task-filter-sheet" aria-labelledby="task-filter-title"
+            @click.self="closeTaskFilters" @close="onTaskFiltersClose">
+            <header class="options-sheet-header task-filter-heading">
+              <h2 id="task-filter-title">Filter &amp; sort</h2>
+              <div class="task-filter-heading-actions">
+                <button v-if="hasTaskListFilters" class="task-filter-clear" type="button" @click="clearTaskListFilters">Clear all</button>
+                <button class="project-task-picker-close" type="button" aria-label="Close" @click="closeTaskFilters">×</button>
+              </div>
+            </header>
+            <div class="options-sheet-body task-filter-sheet-body">
+              <div class="task-filter-section">
+                <h3>Type</h3>
+                <div class="task-type-filter" role="group" aria-label="Task type">
+                  <button type="button" :aria-pressed="taskTypeFilter === 'all'" @click="taskTypeFilter = 'all'">All</button>
+                  <button type="button" :aria-pressed="taskTypeFilter === 'day'" @click="taskTypeFilter = 'day'">Day</button>
+                  <button type="button" :aria-pressed="taskTypeFilter === 'evening'" @click="taskTypeFilter = 'evening'">Evening</button>
+                </div>
+              </div>
+              <div class="task-filter-section">
+                <h3>Sort</h3>
+                <div class="task-filter-sort-options" role="group" aria-label="Sort tasks">
+                  <button v-for="option in taskSortOptions" :key="option.value" type="button"
+                    :aria-pressed="taskSort === option.value" @click="taskSort = option.value">
+                    {{ option.label }}
+                    <svg v-if="taskSort === option.value" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4L19 6" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </dialog>
           <section class="task-list task-list-main" aria-label="Saved tasks">
             <p v-if="tasksLoading" class="list-message">Loading tasks…</p>
             <div v-else-if="tasksError" class="list-message" role="alert">
@@ -905,17 +1039,39 @@ onMounted(checkServer)
               <button type="button" @click="loadTasks">Try again</button>
             </div>
             <p v-else-if="tasks.length === 0" class="list-message">No tasks saved yet.</p>
+            <div v-else-if="visibleTasks.length === 0" class="list-message">
+              <p>{{ overdueOnly && taskTypeFilter === 'all' && !taskSearch.trim() ? 'No overdue tasks.' : 'No matching tasks.' }}</p>
+              <button type="button" @click="resetTaskListView">Reset view</button>
+            </div>
             <ul v-else>
-              <li v-for="task in tasks" :key="task.id">
-                <button class="task-row" type="button" @click="openTaskDetails(task)">
+              <li v-for="task in visibleTasks" :key="task.id">
+                <button class="task-row" :class="{ 'has-hard-deadline': task.deadline_on && task.deadline_is_hard, 'is-overdue': isOverdue(task) }"
+                  type="button" @click="openTaskDetails(task)">
                   <span class="task-row-copy">
                     <strong>{{ task.title }}</strong>
-                    <small>
-                      {{ task.type === 'day' ? 'Day' : 'Evening' }}
-                      <template v-if="task.project_id"> · {{ projects.find((project) => project.id === task.project_id)?.title || 'Project' }}</template>
-                      <template v-if="task.deadline_on"> · Due {{ formatDeadline(task.deadline_on) }}</template>
-                      <template v-else-if="task.recurrence_type !== 'one_time'"> · {{ repeatLabel(task.recurrence_type, task.recurrence_rule) }}</template>
-                    </small>
+                    <span v-if="task.description" class="task-row-description">
+                      <span class="task-row-label">Description</span>
+                      <span class="task-row-description-text">{{ task.description }}</span>
+                    </span>
+                    <span class="task-row-facts">
+                      <span class="task-row-type" :class="task.type === 'day' ? 'is-day' : 'is-evening'">{{ task.type === 'day' ? 'Day' : 'Evening' }}</span>
+                      <span v-if="task.project_id" class="task-row-fact">
+                        <span class="task-row-label">Project</span>
+                        <span class="task-row-fact-value">{{ projects.find((project) => project.id === task.project_id)?.title || `#${task.project_id}` }}</span>
+                      </span>
+                      <span v-if="task.type === 'evening'" class="task-row-fact">
+                        <span class="task-row-label">Priority</span>
+                        {{ priorityLabel(task.priority) }}
+                      </span>
+                      <span v-if="task.deadline_on" class="task-row-deadline" :class="task.deadline_is_hard ? 'is-hard' : 'is-soft'">
+                        <span class="task-row-label">Deadline</span>
+                        {{ isOverdue(task) ? 'Overdue · ' : '' }}{{ task.deadline_is_hard ? 'Hard' : 'Soft' }} · {{ formatDeadline(task.deadline_on) }}
+                      </span>
+                      <span v-else-if="task.recurrence_type !== 'one_time'" class="task-row-fact">
+                        <span class="task-row-label">Repeat</span>
+                        {{ repeatLabel(task.recurrence_type, task.recurrence_rule) }}
+                      </span>
+                    </span>
                   </span>
                   <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 5 7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
                 </button>
@@ -1161,13 +1317,13 @@ onMounted(checkServer)
                     </div>
 
                     <div v-if="deadlineForm.mode !== 'none'" class="deadline-settings">
-                      <label v-if="deadlineForm.mode === 'date'" class="repeat-field" :class="{ 'has-error': fieldErrors.deadline_date }">
+                      <div v-if="deadlineForm.mode === 'date'" class="repeat-field" :class="{ 'has-error': fieldErrors.deadline_date }">
                         <span>Due on</span>
-                        <input ref="deadlineDateInput" v-model="deadlineForm.date" type="date"
-                          :aria-invalid="Boolean(fieldErrors.deadline_date)" :aria-describedby="fieldErrors.deadline_date ? 'deadline-date-error' : undefined"
-                          @input="clearFieldError('deadline_date')" />
+                        <PlannerDatePicker ref="deadlineDateInput" v-model="deadlineForm.date"
+                          :invalid="Boolean(fieldErrors.deadline_date)" :described-by="fieldErrors.deadline_date ? 'deadline-date-error' : undefined"
+                          @change="clearFieldError('deadline_date')" />
                         <span v-if="fieldErrors.deadline_date" id="deadline-date-error" class="field-error">{{ fieldErrors.deadline_date }}</span>
-                      </label>
+                      </div>
 
                       <div v-if="deadlineForm.mode === 'end_of_period'" class="deadline-period-modes" role="radiogroup" aria-label="End of">
                         <label :class="{ selected: deadlineForm.end_unit === 'week' }">
