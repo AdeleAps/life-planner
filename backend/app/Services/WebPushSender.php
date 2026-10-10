@@ -11,6 +11,63 @@ use Throwable;
 
 class WebPushSender
 {
+    /** @return array{sent: int, failed: int} */
+    public function sendAdvanceOfferReminder(string $taskTitle, bool $needsAttention = false): array
+    {
+        $publicKey = config('services.web_push.public_key');
+        $privateKey = config('services.web_push.private_key');
+        $subject = config('services.web_push.subject');
+
+        if (! $publicKey || ! $privateKey || ! $subject) {
+            throw new RuntimeException('Web Push keys are not configured.');
+        }
+
+        $webPush = new WebPush(['VAPID' => [
+            'subject' => $subject, 'publicKey' => $publicKey, 'privateKey' => $privateKey,
+        ]]);
+        $payload = json_encode([
+            'title' => $needsAttention ? 'A future task needs attention' : 'A future day is ready',
+            'body' => mb_substr($taskTitle, 0, 80).($needsAttention
+                ? ' needs a date before its deadline, but the check is unresolved.'
+                : ' has a proposed date to review.'),
+            'url' => '/?setup=tomorrow',
+        ], JSON_THROW_ON_ERROR);
+        $counts = ['sent' => 0, 'failed' => 0];
+
+        foreach (PushSubscription::query()->cursor() as $savedSubscription) {
+            try {
+                $subscription = Subscription::create([
+                    'endpoint' => $savedSubscription->endpoint,
+                    'keys' => ['p256dh' => $savedSubscription->public_key, 'auth' => $savedSubscription->auth_token],
+                    'contentEncoding' => 'aes128gcm',
+                ]);
+                $report = $webPush->sendOneNotification($subscription, $payload, [
+                    'TTL' => 12 * 60 * 60, 'urgency' => 'normal', 'contentType' => 'application/json',
+                ]);
+
+                if ($report->isSuccess()) {
+                    $counts['sent']++;
+                } elseif ($report->isSubscriptionExpired()) {
+                    $savedSubscription->delete();
+                } else {
+                    $counts['failed']++;
+                    Log::warning('Advance offer reminder failed.', [
+                        'subscription_id' => $savedSubscription->id,
+                        'status' => $report->getResponse()?->getStatusCode(),
+                    ]);
+                }
+            } catch (Throwable $exception) {
+                $counts['failed']++;
+                Log::warning('Advance offer reminder could not be sent.', [
+                    'subscription_id' => $savedSubscription->id,
+                    'exception' => $exception::class,
+                ]);
+            }
+        }
+
+        return $counts;
+    }
+
     /**
      * @return array{sent: int, already_sent: int, failed: int, expired: int}
      */

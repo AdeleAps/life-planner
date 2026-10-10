@@ -8,6 +8,7 @@ use App\Models\PlanningDayInput;
 use App\Models\ScheduledTask;
 use App\Services\PlanningBriefBuilder;
 use App\Services\PlanningCapacityPolicy;
+use App\Services\TaskResearcher;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -47,7 +48,7 @@ class PlanningPlanController extends Controller
         ]]);
     }
 
-    public function store(Request $request, string $date, PlanningBriefBuilder $briefBuilder, PlanningCapacityPolicy $capacityPolicy): JsonResponse
+    public function store(Request $request, string $date, PlanningBriefBuilder $briefBuilder, PlanningCapacityPolicy $capacityPolicy, TaskResearcher $taskResearcher): JsonResponse
     {
         $this->validateDate($date);
 
@@ -61,7 +62,7 @@ class PlanningPlanController extends Controller
             'task_ids.*' => ['required', 'integer', 'distinct'],
         ]);
 
-        DB::transaction(function () use ($date, $values, $briefBuilder, $capacityPolicy): void {
+        DB::transaction(function () use ($date, $values, $briefBuilder, $capacityPolicy, $taskResearcher): void {
             $input = PlanningDayInput::query()->where('plan_date', $date)->lockForUpdate()->first();
 
             if ($input === null) {
@@ -120,7 +121,13 @@ class PlanningPlanController extends Controller
             $candidates = collect($brief['standing_tasks'])->keyBy('id');
 
             foreach ($selectedIds as $taskId) {
-                if (($candidates[$taskId]['target_assessment']['state'] ?? null) !== 'preliminary_candidate') {
+                $candidate = $candidates[$taskId] ?? null;
+                $state = $candidate['target_assessment']['state'] ?? null;
+                $researched = in_array($taskId, $draft['researched_eligible_task_ids'] ?? [], true)
+                    && ($draft['research_results'][$taskId]['status'] ?? null) === 'ready'
+                    && $candidate !== null && $taskResearcher->canResearch($candidate);
+
+                if ($state !== 'preliminary_candidate' && ! ($state === 'needs_checks' && $researched)) {
                     throw ValidationException::withMessages(['task_ids' => 'A task changed. Get a fresh draft.']);
                 }
             }

@@ -5,6 +5,7 @@ import PlannerCalendar from './PlannerCalendar.vue'
 import PlanningFocusPanel from './PlanningFocusPanel.vue'
 import PlannerSelect from './PlannerSelect.vue'
 import PlanningDaisy from './PlanningDaisy.vue'
+import AdvanceOffersPanel from './AdvanceOffersPanel.vue'
 import { existingReminderSubscription, getReminderConfiguration, registerPlannerWorker, saveSubscription, subscribeToReminders, supportsReminders, unsubscribeFromReminders } from './push.js'
 
 const activeView = ref('tomorrow')
@@ -99,6 +100,10 @@ const reviewDelayById = ref({})
 const reviewDateById = ref({})
 const reviewFieldErrors = ref({})
 const tomorrowPlan = ref({ draft: null, published: false, note: '', deadline_pressure_warnings: [] })
+const advanceOffers = ref([])
+const advanceOffersLoading = ref(false)
+const advanceOffersError = ref('')
+const advanceOfferBusyId = ref(null)
 const tomorrowPlanLoading = ref(false)
 const tomorrowPlanError = ref('')
 const tomorrowDraftLoading = ref(false)
@@ -542,6 +547,56 @@ function showTomorrow() {
   activeView.value = 'tomorrow'
   loadTomorrowSetup()
   loadPendingReviewTasks()
+  loadAdvanceOffers()
+}
+
+function advanceOfferDate(date) {
+  return new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
+    .format(new Date(`${date}T12:00:00`))
+}
+
+let advanceRefreshPromise = null
+
+async function loadAdvanceOffers() {
+  if (advanceRefreshPromise) return advanceRefreshPromise
+  advanceOffersLoading.value = true
+  advanceOffersError.value = ''
+  advanceRefreshPromise = (async () => {
+    try {
+      const response = await fetch('/api/v1/advance-offers/refresh', {
+        method: 'POST', headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) throw new Error('Advance planning is unavailable.')
+      const result = await response.json()
+      advanceOffers.value = result.data || []
+    } catch {
+      advanceOffersError.value = 'Could not check upcoming tasks. Try again.'
+    } finally {
+      advanceOffersLoading.value = false
+      advanceRefreshPromise = null
+    }
+  })()
+  return advanceRefreshPromise
+}
+
+async function decideAdvanceOffer(offer, decision) {
+  if (advanceOfferBusyId.value !== null) return
+  advanceOfferBusyId.value = offer.id
+  advanceOffersError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/advance-offers/${offer.id}/${decision}`, {
+      method: 'POST', headers: { Accept: 'application/json' },
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(result.errors?.offer?.[0] || 'This date changed. Try again.')
+    advanceOffers.value = result.offers || []
+    if (decision === 'accept') await loadTomorrowSetup()
+  } catch (error) {
+    advanceOffersError.value = error.message
+  } finally {
+    advanceOfferBusyId.value = null
+  }
 }
 
 function reviewDateLabel(date) {
@@ -757,6 +812,7 @@ function openTomorrowSetup() {
   loadTasks()
   loadTomorrowSetup()
   loadPendingReviewTasks()
+  loadAdvanceOffers()
   claimFocusPrompts()
 }
 
@@ -2092,6 +2148,7 @@ async function saveTask() {
     editingProjectRevision.value = null
     resetCaptureForm()
     clientRequestIds[entryKind.value] = crypto.randomUUID()
+    if (!isProject) loadAdvanceOffers()
     if (createdForTomorrow) await returnToTomorrowSetup(result.data)
   } catch (error) {
     saveError.value = error.message || `Couldn't save this ${entryKind.value}. Try again.`
@@ -2106,6 +2163,7 @@ onMounted(() => {
   fetch('/api/v1/calendar/bootstrap', { headers: { Accept: 'application/json' }, cache: 'no-store' }).catch(() => {})
   refreshToday()
   loadReminderStatus()
+  loadAdvanceOffers()
 
   if (new URLSearchParams(window.location.search).get('setup') === 'tomorrow') {
     window.history.replaceState(null, '', window.location.pathname)
@@ -2174,6 +2232,13 @@ onBeforeUnmount(() => {
           </div>
           <img class="hero-flower" src="/sunflower.svg?v=2" alt="" aria-hidden="true" />
         </section>
+
+        <button v-if="advanceOffers.length" class="advance-home-cue" type="button" @click="openTomorrowSetup">
+          <span>{{ advanceOffers[0].status === 'unavailable' ? 'Needs attention' : 'Coming up' }}</span>
+          <strong>{{ advanceOffers[0].title }}</strong>
+          <small>{{ advanceOffers[0].proposed_on ? `Proposed for ${advanceOfferDate(advanceOffers[0].proposed_on)}` : 'Needs a suitable day' }}</small>
+          <span aria-hidden="true">→</span>
+        </button>
 
         <div v-if="tomorrowCapacityWarnings.length" class="capacity-warnings" aria-label="Deadline and capacity warnings">
           <p v-for="warning in tomorrowCapacityWarnings" :key="warning" class="capacity-warning" role="status">{{ warning }}</p>
@@ -2259,6 +2324,9 @@ onBeforeUnmount(() => {
                     </ul>
                   </template>
                 </section>
+                <AdvanceOffersPanel :offers="advanceOffers" :error="advanceOffersError" :busy-id="advanceOfferBusyId"
+                  @accept="(offer) => decideAdvanceOffer(offer, 'accept')"
+                  @decline="(offer) => decideAdvanceOffer(offer, 'decline')" @retry="loadAdvanceOffers" />
                 <section v-if="focusPrompts.length || focusPromptError" class="tomorrow-focus-prompts" aria-label="Upcoming focus">
                   <label v-for="prompt in focusPrompts" :key="prompt.kind" class="tomorrow-focus-field">
                     <span>{{ prompt.kind === 'week' ? 'Next week’s focus' : 'Next month’s focus' }} <small>optional</small></span>
@@ -2364,16 +2432,43 @@ onBeforeUnmount(() => {
               </div>
               <template v-else-if="tomorrowSetupStep === 'draft'">
                 <p v-for="warning in tomorrowCapacityWarnings" :key="warning" class="capacity-warning" role="status">{{ warning }}</p>
+                <div v-for="check in tomorrowPlan.draft?.accepted_advance_checks || []" :key="check.task_id"
+                  class="planning-other-check" :class="{ 'capacity-warning': check.result.status !== 'ready' }" role="status">
+                  <strong>{{ check.title }}</strong>
+                  <p>{{ check.result.status === 'ready' ? check.result.summary : `This accepted task stays on tomorrow’s calendar, but its check needs your attention: ${check.result.summary}` }}</p>
+                  <div v-if="check.result.sources?.length" class="planning-research-sources">
+                    <a v-for="source in check.result.sources" :key="source.url" :href="source.url" target="_blank" rel="noopener noreferrer">{{ source.title }}</a>
+                  </div>
+                </div>
                 <p v-if="tomorrowPlan.draft?.note" class="planning-draft-note">{{ tomorrowPlan.draft.note }}</p>
                 <ul v-if="tomorrowPlan.draft?.tasks.length" class="planning-draft-tasks">
                   <li v-for="task in tomorrowPlan.draft.tasks" :key="task.id">
                     <label :class="{ 'needs-check': tomorrowPlan.draft.needs_checks_task_ids.includes(task.id) }">
                       <input v-model="draftSelectedTaskIds" type="checkbox" :value="task.id" :disabled="tomorrowPlan.draft.needs_checks_task_ids.includes(task.id)" />
-                      <span class="planning-draft-task-copy"><strong>{{ task.title }}</strong><small>{{ task.type === 'day' ? 'Day' : 'Evening' }}<template v-if="tomorrowPlan.draft.needs_checks_task_ids.includes(task.id)"> · Research needed</template></small></span>
+                      <span class="planning-draft-task-copy"><strong>{{ task.title }}</strong><small>{{ task.type === 'day' ? 'Day' : 'Evening' }}<template v-if="tomorrowPlan.draft.research_results?.[task.id]"> · {{ tomorrowPlan.draft.research_results[task.id].status === 'ready' ? 'Check complete' : tomorrowPlan.draft.research_results[task.id].status === 'unsuitable' ? 'Not suitable tomorrow' : 'Check unresolved' }}</template><template v-else-if="tomorrowPlan.draft.needs_checks_task_ids.includes(task.id)"> · Check needed</template></small></span>
                     </label>
+                    <div v-if="tomorrowPlan.draft.research_results?.[task.id]" class="planning-research-result">
+                      <p>{{ tomorrowPlan.draft.research_results[task.id].summary }}</p>
+                      <div v-if="tomorrowPlan.draft.research_results[task.id].sources.length" class="planning-research-sources">
+                        <a v-for="source in tomorrowPlan.draft.research_results[task.id].sources" :key="source.url" :href="source.url" target="_blank" rel="noopener noreferrer">{{ source.title }}</a>
+                      </div>
+                    </div>
                   </li>
                 </ul>
                 <p v-else class="planning-draft-empty">No extra tasks suggested.</p>
+                <details v-if="tomorrowPlan.draft?.other_checked_tasks?.length" class="planning-other-checks">
+                  <summary>{{ tomorrowPlan.draft.other_checked_tasks.length }} due {{ tomorrowPlan.draft.other_checked_tasks.length === 1 ? 'task was' : 'tasks were' }} checked but not selected</summary>
+                  <div v-for="item in tomorrowPlan.draft.other_checked_tasks" :key="item.id" class="planning-other-check">
+                    <strong>{{ item.title }}</strong>
+                    <p>{{ item.result.summary }}</p>
+                    <div v-if="item.result.sources.length" class="planning-research-sources">
+                      <a v-for="source in item.result.sources" :key="source.url" :href="source.url" target="_blank" rel="noopener noreferrer">{{ source.title }}</a>
+                    </div>
+                  </div>
+                </details>
+                <AdvanceOffersPanel :offers="advanceOffers" :error="advanceOffersError" :busy-id="advanceOfferBusyId"
+                  @accept="(offer) => decideAdvanceOffer(offer, 'accept')"
+                  @decline="(offer) => decideAdvanceOffer(offer, 'decline')" @retry="loadAdvanceOffers" />
                 <p v-if="tomorrowPlanError" class="form-error" role="alert">{{ tomorrowPlanError }}</p>
                 <button class="tomorrow-plan-edit" type="button" @click="tomorrowSetupStep = 'setup'">Edit setup</button>
               </template>
@@ -2406,7 +2501,15 @@ onBeforeUnmount(() => {
           <p v-if="tomorrowPlan.published && tomorrowPlan.note" class="tomorrow-plan-note">{{ tomorrowPlan.note }}</p>
           <ul>
             <li v-for="item in tomorrowScheduledTasks" :key="item.id">
-              <strong>{{ item.task.title }}</strong>
+              <div class="tomorrow-planned-task">
+                <strong>{{ item.task.title }}</strong>
+                <template v-if="item.research_result">
+                  <p>{{ item.research_result.status === 'ready' ? item.research_result.summary : `Check this plan: ${item.research_result.summary}` }}</p>
+                  <div class="planning-research-sources">
+                    <a v-for="source in item.research_result.sources" :key="source.url" :href="source.url" target="_blank" rel="noopener noreferrer">{{ source.title }}</a>
+                  </div>
+                </template>
+              </div>
               <span>{{ item.task.type === 'day' ? 'Day' : 'Evening' }}</span>
             </li>
           </ul>
@@ -2452,6 +2555,12 @@ onBeforeUnmount(() => {
                   <button v-if="todayLibraryTask(item)" type="button" @click="openTaskDetails(todayLibraryTask(item), 'today')">{{ item.task.title }}</button>
                   <strong v-else>{{ item.task.title }}</strong>
                   <span v-if="isTodayTaskDone(item)" class="today-done-label">Done</span>
+                  <div v-if="item.research_result" class="today-task-research">
+                    <span>{{ item.research_result.summary }}</span>
+                    <div v-if="item.research_result.sources?.length" class="planning-research-sources">
+                      <a v-for="source in item.research_result.sources" :key="source.url" :href="source.url" target="_blank" rel="noopener noreferrer">{{ source.title }}</a>
+                    </div>
+                  </div>
                 </div>
                 <button v-if="item.task.lifecycle_state === 'active'" class="today-finish-button" :class="{ 'is-repeat': isTodayTaskDone(item) }"
                   type="button" :disabled="completionBusy || actionBusy"

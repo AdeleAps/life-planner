@@ -13,6 +13,11 @@ Schedule::command('planner:queue-evening-review')
     ->timezone('Europe/Riga')
     ->withoutOverlapping(10);
 
+Schedule::command('planner:refresh-advance-offers')
+    ->dailyAt('19:50')
+    ->timezone('Europe/Riga')
+    ->withoutOverlapping(10);
+
 Schedule::command('planner:sync-latvian-holidays --force')
     ->yearlyOn(1, 1, '01:30')
     ->timezone('Europe/Riga')

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\V1\AdvanceOfferController;
 use App\Http\Controllers\Api\V1\CalendarController;
 use App\Http\Controllers\Api\V1\DevResetController;
 use App\Http\Controllers\Api\V1\PlanningDayInputController;
@@ -25,6 +26,10 @@ Route::put('/v1/calendar/days-off/{dayOffPeriod}', [CalendarController::class, '
 Route::delete('/v1/calendar/days-off/{dayOffPeriod}', [CalendarController::class, 'destroyDayOff'])->name('api.v1.calendar.days-off.destroy');
 
 Route::get('/v1/focuses', [PlanningFocusController::class, 'index'])->name('api.v1.focuses.index');
+Route::get('/v1/advance-offers', [AdvanceOfferController::class, 'index'])->name('api.v1.advance-offers.index');
+Route::post('/v1/advance-offers/refresh', [AdvanceOfferController::class, 'refresh'])->middleware('throttle:10,1')->name('api.v1.advance-offers.refresh');
+Route::post('/v1/advance-offers/{offer}/accept', [AdvanceOfferController::class, 'accept'])->name('api.v1.advance-offers.accept');
+Route::post('/v1/advance-offers/{offer}/decline', [AdvanceOfferController::class, 'decline'])->name('api.v1.advance-offers.decline');
 Route::post('/v1/focuses/tomorrow-prompts', [PlanningFocusController::class, 'claimTomorrowPrompts'])->name('api.v1.focuses.tomorrow-prompts');
 Route::put('/v1/focuses/{kind}/{startsOn}', [PlanningFocusController::class, 'update'])->name('api.v1.focuses.update');
 

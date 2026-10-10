@@ -101,7 +101,7 @@ class PlanningBriefBuilder
             'snapshot_limits' => [
                 'calendar' => 'not_connected',
                 'national_holidays' => $calendarDays->every(fn (array $day): bool => $day['holiday_year_synced']) ? 'synced' : 'not_fully_synced',
-                'advance_acceptances' => 'not_implemented',
+                'advance_acceptances' => 'accepted_dates_are_fixed_and_visible',
                 'recurrence_due_dates' => 'not_evaluated',
                 'future_energy' => 'unknown_unless_saved',
                 'capacity' => 'known_task_counts_only',

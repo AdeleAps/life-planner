@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Models\PlanningDayInput;
 use App\Models\Task;
+use App\Services\PlanningBriefBuilder;
+use App\Services\TaskResearcher;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
@@ -90,6 +92,195 @@ class PlanningDraftTest extends TestCase
 
         Http::assertNothingSent();
         $this->assertDatabaseCount('ai_planning_requests', 0);
+    }
+
+    public function test_only_a_shortlisted_special_instruction_is_researched_and_can_be_saved_with_sources(): void
+    {
+        $task = Task::factory()->create([
+            'special_instructions' => 'Look up a real cinema screening in Riga tomorrow evening.',
+            'deadline_on' => '2026-10-11', 'deadline_is_hard' => true,
+        ]);
+        Task::factory()->create(['special_instructions' => 'Look up parking before planning.']);
+        Http::fake(function ($request) use ($task) {
+            if (($request['tools'][0]['type'] ?? null) === 'web_search') {
+                return Http::response([
+                    'status' => 'completed',
+                    'output' => [
+                        ['type' => 'web_search_call', 'status' => 'completed', 'action' => [
+                            'type' => 'search', 'sources' => [['title' => 'Cinema schedule', 'url' => 'https://example.org/screening']],
+                        ]],
+                        ['type' => 'message', 'content' => [['type' => 'output_text', 'text' => json_encode([
+                            'status' => 'ready', 'summary' => 'A screening starts at 19:00. ([Cinema](https://example.org/screening))',
+                            'valid_until_on' => '2026-10-11',
+                        ])]]],
+                    ],
+                    'usage' => ['input_tokens' => 99, 'output_tokens' => 30],
+                ]);
+            }
+
+            return Http::response([
+                'status' => 'completed',
+                'output' => [['content' => [['type' => 'output_text', 'text' => json_encode([
+                    'task_ids' => [$task->id], 'note' => '',
+                ])]]]],
+            ]);
+        });
+
+        $requestId = (string) Str::uuid();
+        $draft = $this->postJson('/api/v1/planning-days/2026-10-11/draft', [
+            'client_request_id' => $requestId,
+        ])->assertOk();
+
+        $draft->assertJsonPath("data.research_results.{$task->id}.status", 'ready')
+            ->assertJsonPath("data.research_results.{$task->id}.summary", 'A screening starts at 19:00.')
+            ->assertJsonPath("data.research_results.{$task->id}.sources.0.url", 'https://example.org/screening');
+        $this->assertSame([], $draft->json('data.needs_checks_task_ids'));
+        Http::assertSentCount(2);
+        Http::assertSent(fn ($request): bool => ($request['tools'][0]['type'] ?? null) === 'web_search'
+            && $request['max_tool_calls'] === 2 && $request['tool_choice'] === 'required');
+        $this->assertDatabaseCount('task_research_checks', 1);
+        $this->assertSame(50, DB::table('ai_monthly_budgets')->value('allowance_cents'));
+
+        $this->postJson('/api/v1/planning-days/2026-10-11/plan', [
+            'client_request_id' => $requestId, 'task_ids' => [$task->id],
+        ])->assertOk()->assertJsonPath('data.published', true);
+        $this->assertDatabaseHas('scheduled_tasks', ['task_id' => $task->id, 'plan_date' => '2026-10-11']);
+        $this->getJson('/api/v1/planning-days/2026-10-11/tasks')->assertOk()
+            ->assertJsonPath('data.0.research_result.summary', 'A screening starts at 19:00.')
+            ->assertJsonPath('data.0.research_result.sources.0.url', 'https://example.org/screening');
+    }
+
+    public function test_a_check_without_a_completed_search_cannot_be_saved_as_complete(): void
+    {
+        $task = Task::factory()->create(['special_instructions' => 'Check the weather before planning.']);
+        Http::fake(function ($request) use ($task) {
+            if (($request['tools'][0]['type'] ?? null) === 'web_search') {
+                return Http::response([
+                    'status' => 'completed',
+                    'output' => [
+                        ['type' => 'web_search_call', 'status' => 'failed', 'action' => ['type' => 'search', 'sources' => []]],
+                        ['type' => 'message', 'content' => [['type' => 'output_text', 'text' => json_encode([
+                            'status' => 'ready', 'summary' => 'It looks dry.', 'valid_until_on' => '2026-10-11',
+                        ])]]],
+                    ],
+                ]);
+            }
+
+            return Http::response(['status' => 'completed', 'output' => [['content' => [[
+                'type' => 'output_text', 'text' => json_encode(['task_ids' => [$task->id], 'note' => '']),
+            ]]]]]);
+        });
+
+        $requestId = (string) Str::uuid();
+        $draft = $this->postJson('/api/v1/planning-days/2026-10-11/draft', [
+            'client_request_id' => $requestId,
+        ])->assertOk();
+        $draft->assertJsonPath("data.research_results.{$task->id}.status", 'unknown');
+        $this->assertSame([$task->id], $draft->json('data.needs_checks_task_ids'));
+
+        $this->postJson('/api/v1/planning-days/2026-10-11/plan', [
+            'client_request_id' => $requestId, 'task_ids' => [$task->id],
+        ])->assertStatus(422);
+        $this->assertDatabaseCount('scheduled_tasks', 0);
+    }
+
+    public function test_a_hard_deadline_due_tomorrow_triggers_research_even_when_not_shortlisted(): void
+    {
+        $due = Task::factory()->create([
+            'deadline_on' => '2026-10-11', 'deadline_is_hard' => true,
+            'special_instructions' => 'Look up a real screening tomorrow evening.',
+        ]);
+        $chosen = Task::factory()->create();
+        Http::fake(function ($request) use ($chosen, $due) {
+            if (($request['tools'][0]['type'] ?? null) === 'web_search') {
+                return Http::response([
+                    'status' => 'completed',
+                    'output' => [
+                        ['type' => 'web_search_call', 'status' => 'completed', 'action' => [
+                            'type' => 'search', 'sources' => [['url' => 'https://example.org/film', 'title' => 'Film']],
+                        ]],
+                        ['type' => 'message', 'content' => [['type' => 'output_text', 'text' => json_encode([
+                            'status' => 'ready', 'summary' => 'A screening is available.',
+                            'valid_until_on' => '2026-10-11',
+                        ])]]],
+                    ],
+                ]);
+            }
+
+            $brief = json_decode($request['input'], true);
+            $this->assertSame('ready', $brief['preflight_research'][$due->id]['status']);
+
+            return Http::response(['status' => 'completed', 'output' => [['content' => [[
+                'type' => 'output_text', 'text' => json_encode(['task_ids' => [$chosen->id], 'note' => '']),
+            ]]]]]);
+        });
+
+        $draft = $this->postJson('/api/v1/planning-days/2026-10-11/draft', [
+            'client_request_id' => (string) Str::uuid(),
+        ])->assertOk();
+
+        $draft->assertJsonPath('data.other_checked_tasks.0.id', $due->id)
+            ->assertJsonPath('data.other_checked_tasks.0.result.status', 'ready');
+        Http::assertSentCount(2);
+        $this->assertDatabaseCount('task_research_checks', 1);
+    }
+
+    public function test_still_valid_stable_research_is_reused_for_another_day(): void
+    {
+        $task = Task::factory()->create(['special_instructions' => 'Look up nearby parking.']);
+        Http::fake(['api.openai.com/*' => Http::response([
+            'status' => 'completed',
+            'output' => [
+                ['type' => 'web_search_call', 'status' => 'completed', 'action' => [
+                    'type' => 'search', 'sources' => [['title' => 'Parking', 'url' => 'https://example.org/parking']],
+                ]],
+                ['type' => 'message', 'content' => [['type' => 'output_text', 'text' => json_encode([
+                    'status' => 'ready', 'summary' => 'Parking is available nearby.',
+                    'valid_until_on' => '2026-10-20',
+                ])]]],
+            ],
+        ])]);
+
+        $entry = collect(app(PlanningBriefBuilder::class)->build(CarbonImmutable::parse('2026-10-11', 'Europe/Riga'))['standing_tasks'])
+            ->firstWhere('id', $task->id);
+        $researcher = app(TaskResearcher::class);
+        $first = $researcher->check($entry, '2026-10-11');
+        $task->update(['revision' => 2]);
+        $entry['revision'] = 2;
+        $second = $researcher->check($entry, '2026-10-12');
+
+        $this->assertSame($first, $second);
+        Http::assertSentCount(1);
+        $this->assertDatabaseCount('task_research_checks', 2);
+        $this->assertSame(30, DB::table('ai_monthly_budgets')->value('allowance_cents'));
+    }
+
+    public function test_date_specific_research_is_checked_again_for_another_day(): void
+    {
+        $task = Task::factory()->create(['special_instructions' => 'Check the weather for the planned day.']);
+        Http::fake(function ($request) {
+            return Http::response([
+                'status' => 'completed',
+                'output' => [
+                    ['type' => 'web_search_call', 'status' => 'completed', 'action' => [
+                        'type' => 'search', 'sources' => [['title' => 'Forecast', 'url' => 'https://example.org/forecast']],
+                    ]],
+                    ['type' => 'message', 'content' => [['type' => 'output_text', 'text' => json_encode([
+                        'status' => 'ready', 'summary' => 'The forecast is suitable.', 'valid_until_on' => '2026-10-20',
+                    ])]]],
+                ],
+            ]);
+        });
+
+        $entry = collect(app(PlanningBriefBuilder::class)->build(CarbonImmutable::parse('2026-10-11', 'Europe/Riga'))['standing_tasks'])
+            ->firstWhere('id', $task->id);
+        $researcher = app(TaskResearcher::class);
+        $first = $researcher->check($entry, '2026-10-11');
+        $researcher->check($entry, '2026-10-12');
+
+        $this->assertSame('2026-10-11', $first['valid_until_on']);
+        Http::assertSentCount(2);
+        $this->assertSame(60, DB::table('ai_monthly_budgets')->value('allowance_cents'));
     }
 
     public function test_more_than_three_drafts_for_one_day_are_allowed(): void

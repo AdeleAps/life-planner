@@ -1015,6 +1015,166 @@ textarea:focus-visible {
   font-size: 12px;
 }
 
+.planning-research-result {
+  margin: 6px 6px 10px 46px;
+  color: var(--green-deep);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.planning-research-result p,
+.tomorrow-planned-task p {
+  margin: 0;
+}
+
+.planning-research-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+}
+
+.planning-research-sources a {
+  color: var(--green-deep);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.advance-home-cue {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 12px;
+  width: 100%;
+  margin-top: 16px;
+  padding: 16px 20px;
+  border: 1px solid #d9e7de;
+  border-left: 5px solid var(--sun);
+  border-radius: 18px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+  box-shadow: 0 10px 24px rgba(19, 73, 58, 0.045);
+}
+
+.advance-home-cue span:first-child,
+.advance-home-cue small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.advance-home-cue strong {
+  font-size: 16px;
+}
+
+.advance-home-cue span:last-child {
+  grid-column: 2;
+  grid-row: 1 / 4;
+  align-self: center;
+  color: var(--green-deep);
+  font-size: 23px;
+}
+
+.advance-offers {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0 22px;
+  padding: 16px;
+  border: 1px solid #d9e7de;
+  border-radius: 19px;
+  background: #f7fbf8;
+}
+
+.advance-offers-heading h3 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: -0.03em;
+}
+
+.advance-offer {
+  display: grid;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.advance-offer strong {
+  font-size: 15px;
+}
+
+.advance-offer-kind {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.advance-offer-date {
+  color: var(--green-deep);
+  font-weight: 750;
+}
+
+.advance-offer p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.advance-offer .advance-offer-conflict {
+  color: #945121;
+}
+
+.advance-offer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 5px;
+}
+
+.advance-offer-actions button {
+  min-height: 40px;
+  padding: 8px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.advance-offer-actions button:first-child {
+  border-color: var(--sun);
+  background: var(--sun);
+}
+
+.advance-offer-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.planning-other-checks {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  color: var(--green-deep);
+  font-size: 12px;
+}
+
+.planning-other-checks summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.planning-other-check {
+  margin-top: 12px;
+  line-height: 1.45;
+}
+
+.planning-other-check p {
+  margin: 3px 0 0;
+}
+
 .planning-draft-empty {
   margin: 17px 0 0;
   color: var(--muted);
@@ -1053,6 +1213,17 @@ textarea:focus-visible {
 .tomorrow-planned li strong {
   font-size: 15px;
   font-weight: 750;
+}
+
+.tomorrow-planned-task {
+  min-width: 0;
+}
+
+.tomorrow-planned-task p,
+.tomorrow-planned-task .planning-research-sources {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .tomorrow-planned li span {
@@ -1238,6 +1409,15 @@ textarea:focus-visible {
   color: var(--green-deep);
   font-size: 12px;
   font-weight: 750;
+}
+
+.today-task-research {
+  display: grid;
+  gap: 5px;
+  max-width: 38rem;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
 }
 
 .today-finish-button {
