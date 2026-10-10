@@ -1,0 +1,18 @@
+{
+  "id": "/",
+  "name": "Planner",
+  "short_name": "Planner",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f5fbf7",
+  "theme_color": "#f5fbf7",
+  "icons": [
+    {
+      "src": "/sunflower.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

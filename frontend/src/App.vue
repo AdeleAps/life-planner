@@ -2,12 +2,18 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import PlannerDatePicker from './PlannerDatePicker.vue'
 import PlannerSelect from './PlannerSelect.vue'
+import { existingReminderSubscription, getReminderConfiguration, registerPlannerWorker, saveSubscription, subscribeToReminders, supportsReminders, unsubscribeFromReminders } from './push.js'
 
 const activeView = ref('tomorrow')
 const showResetButton = import.meta.env.DEV
 const resetBusy = ref(false)
 const resetFeedback = ref('')
 const resetFailed = ref(false)
+const remindersAvailable = ref(false)
+const remindersEnabled = ref(false)
+const remindersBusy = ref(false)
+const remindersError = ref('')
+const reminderPublicKey = ref('')
 const entryKind = ref('task')
 const serverAvailable = ref(true)
 const isCheckingServer = ref(false)
@@ -390,6 +396,56 @@ function onTaskFiltersClose() {
 
 function refreshToday() {
   todayDate.value = localDate(new Date())
+}
+
+async function loadReminderStatus() {
+  if (!supportsReminders()) return
+
+  try {
+    const configuration = await getReminderConfiguration()
+    if (!configuration.available) return
+
+    reminderPublicKey.value = configuration.public_key
+    remindersAvailable.value = true
+    await registerPlannerWorker()
+    const subscription = await existingReminderSubscription()
+    remindersEnabled.value = Boolean(subscription)
+    if (subscription) await saveSubscription(subscription)
+  } catch {
+    remindersError.value = 'Could not check reminders.'
+  }
+}
+
+async function toggleReminders() {
+  if (remindersBusy.value) return
+  remindersBusy.value = true
+  remindersError.value = ''
+
+  try {
+    if (remindersEnabled.value) {
+      const subscription = await existingReminderSubscription()
+      if (subscription) await unsubscribeFromReminders(subscription)
+      remindersEnabled.value = false
+      return
+    }
+
+    const permission = Notification.permission === 'granted'
+      ? 'granted'
+      : await Notification.requestPermission()
+
+    if (permission !== 'granted') {
+      remindersError.value = 'Allow notifications in your iPhone settings.'
+      return
+    }
+
+    await registerPlannerWorker()
+    await subscribeToReminders(reminderPublicKey.value)
+    remindersEnabled.value = true
+  } catch {
+    remindersError.value = 'Could not enable reminders. Open Planner from your Home Screen and try again.'
+  } finally {
+    remindersBusy.value = false
+  }
 }
 
 function isTodayTaskDone(item) {
@@ -1772,8 +1828,16 @@ let todayRefreshInterval
 onMounted(() => {
   checkServer()
   refreshToday()
-  loadTomorrowSetup()
-  loadPendingReviewTasks()
+  loadReminderStatus()
+
+  if (new URLSearchParams(window.location.search).get('setup') === 'tomorrow') {
+    window.history.replaceState(null, '', window.location.pathname)
+    openTomorrowSetup()
+  } else {
+    loadTomorrowSetup()
+    loadPendingReviewTasks()
+  }
+
   document.addEventListener('visibilitychange', refreshToday)
   todayRefreshInterval = window.setInterval(refreshToday, 60_000)
 })
@@ -1831,6 +1895,14 @@ onBeforeUnmount(() => {
           </div>
           <img class="hero-flower" src="/sunflower.svg?v=2" alt="" aria-hidden="true" />
         </section>
+
+        <div v-if="remindersAvailable" class="reminder-control">
+          <span>20:00 reminder <strong v-if="remindersEnabled">On</strong></span>
+          <button type="button" :disabled="remindersBusy" @click="toggleReminders">
+            {{ remindersBusy ? 'Working…' : remindersEnabled ? 'Turn off' : 'Enable' }}
+          </button>
+          <p v-if="remindersError" role="alert">{{ remindersError }}</p>
+        </div>
 
         <button class="add-task-shortcut" type="button" @click="openTaskForm()">
           <span class="shortcut-icon" aria-hidden="true">

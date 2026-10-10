@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\DevResetController;
 use App\Http\Controllers\Api\V1\PlanningDayInputController;
 use App\Http\Controllers\Api\V1\ProjectController;
+use App\Http\Controllers\Api\V1\PushSubscriptionController;
 use App\Http\Controllers\Api\V1\ScheduledTaskController;
 use App\Http\Controllers\Api\V1\TaskCompletionController;
 use App\Http\Controllers\Api\V1\TaskController;
@@ -12,6 +13,10 @@ use Illuminate\Support\Facades\Route;
 Route::get('/v1/health', static function (): JsonResponse {
     return response()->json(['status' => 'ok']);
 })->name('api.v1.health');
+
+Route::get('/v1/push/configuration', [PushSubscriptionController::class, 'configuration'])->name('api.v1.push.configuration');
+Route::post('/v1/push/subscriptions', [PushSubscriptionController::class, 'store'])->middleware('throttle:10,1')->name('api.v1.push.subscriptions.store');
+Route::delete('/v1/push/subscriptions', [PushSubscriptionController::class, 'destroy'])->middleware('throttle:10,1')->name('api.v1.push.subscriptions.destroy');
 
 Route::get('/v1/tasks', [TaskController::class, 'index'])->name('api.v1.tasks.index');
 Route::get('/v1/planning-days/{date}/setup', [PlanningDayInputController::class, 'show'])->name('api.v1.planning-days.setup.show');
