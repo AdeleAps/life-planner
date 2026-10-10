@@ -30,6 +30,7 @@ const todayScheduledTasks = ref([])
 const todayTasksLoading = ref(false)
 const todayTasksError = ref('')
 const todayDoneCount = computed(() => todayScheduledTasks.value.filter(isTodayTaskDone).length)
+const todayAllDone = computed(() => todayScheduledTasks.value.length > 0 && todayDoneCount.value === todayScheduledTasks.value.length)
 const todayTaskGroups = computed(() => [
   { type: 'day', label: 'Day' },
   { type: 'evening', label: 'Evening' },
@@ -57,6 +58,12 @@ const tomorrowSetupLoading = ref(false)
 const tomorrowSetupSaving = ref(false)
 const tomorrowSetupLoadError = ref('')
 const tomorrowSetupError = ref('')
+const pendingReviewTasks = ref([])
+const pendingReviewLoading = ref(false)
+const pendingReviewError = ref('')
+const reviewDoneById = ref({})
+const tomorrowReady = computed(() => tomorrowSetupSaved.value && !tomorrowSetupLoading.value && !tomorrowSetupLoadError.value
+  && !pendingReviewLoading.value && !pendingReviewError.value && pendingReviewTasks.value.length === 0)
 const tomorrowDishError = ref('')
 const tomorrowTaskError = ref('')
 const tomorrowScheduledTasks = ref([])
@@ -424,6 +431,42 @@ function showToday() {
   loadProjects()
 }
 
+function showTomorrow() {
+  activeView.value = 'tomorrow'
+  loadTomorrowSetup()
+  loadPendingReviewTasks()
+}
+
+function reviewDateLabel(date) {
+  if (date === todayDate.value) return 'Today'
+  return new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
+    .format(new Date(`${date}T12:00:00`))
+}
+
+let latestPendingReviewLoad = 0
+
+async function loadPendingReviewTasks() {
+  const loadId = ++latestPendingReviewLoad
+  pendingReviewLoading.value = true
+  pendingReviewError.value = ''
+
+  try {
+    const response = await fetch('/api/v1/planning-review/pending', {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
+    if (!response.ok) throw new Error('Could not load task review')
+    const result = await response.json()
+    if (loadId !== latestPendingReviewLoad) return
+    pendingReviewTasks.value = result.data
+    reviewDoneById.value = Object.fromEntries(result.data.map((item) => [item.id, true]))
+  } catch {
+    if (loadId === latestPendingReviewLoad) pendingReviewError.value = "Couldn't load tasks to review. Try again."
+  } finally {
+    if (loadId === latestPendingReviewLoad) pendingReviewLoading.value = false
+  }
+}
+
 let latestTomorrowSetupLoad = 0
 
 async function loadTomorrowSetup() {
@@ -466,6 +509,7 @@ function openTomorrowSetup() {
   tomorrowTaskSearch.value = ''
   loadTasks()
   loadTomorrowSetup()
+  loadPendingReviewTasks()
 }
 
 function closeTomorrowSetup() {
@@ -540,7 +584,7 @@ async function returnToTomorrowSetup(createdTask = null) {
 }
 
 async function saveTomorrowSetup() {
-  if (tomorrowSetupSaving.value) return
+  if (tomorrowSetupSaving.value || pendingReviewLoading.value || pendingReviewError.value) return
   tomorrowDishError.value = ''
   tomorrowTaskError.value = ''
   tomorrowSetupError.value = ''
@@ -564,6 +608,10 @@ async function saveTomorrowSetup() {
         dinner_enabled: tomorrowSetup.dinner_enabled,
         dinner_dish: tomorrowSetup.dinner_enabled ? tomorrowSetup.dinner_dish.trim() : null,
         manual_task_ids: tomorrowManualTaskIds.value,
+        task_review: pendingReviewTasks.value.map((item) => ({
+          scheduled_task_id: item.id,
+          done: reviewDoneById.value[item.id],
+        })),
       }),
     })
     const result = await response.json()
@@ -577,6 +625,11 @@ async function saveTomorrowSetup() {
       }
       if (result.errors?.manual_task_ids || Object.keys(result.errors || {}).some((key) => key.startsWith('manual_task_ids.'))) {
         tomorrowTaskError.value = result.errors.manual_task_ids?.[0] || 'Check the tasks added for tomorrow.'
+        return
+      }
+      if (result.errors?.task_review || Object.keys(result.errors || {}).some((key) => key.startsWith('task_review.'))) {
+        await loadPendingReviewTasks()
+        tomorrowSetupError.value = 'Tasks changed. Check the review and save again.'
         return
       }
       throw new Error("Couldn't save tomorrow's setup. Try again.")
@@ -593,6 +646,7 @@ async function saveTomorrowSetup() {
     tomorrowManualTaskIds.value = [...savedTomorrowManualTaskIds.value]
     tomorrowSetupSaved.value = true
     Object.assign(tomorrowSetup, savedTomorrowSetup.value)
+    await Promise.all([loadPendingReviewTasks(), loadTodayTasks(), loadTasks(), loadProjects()])
     closeTomorrowSetup()
   } catch {
     tomorrowSetupError.value = "Couldn't save tomorrow's setup. Try again."
@@ -602,7 +656,10 @@ async function saveTomorrowSetup() {
 }
 
 watch(tomorrowDate, loadTomorrowSetup)
-watch(todayDate, loadTodayTasks)
+watch(todayDate, () => {
+  loadTodayTasks()
+  loadPendingReviewTasks()
+})
 
 async function resetTestDay() {
   if (resetBusy.value) return
@@ -619,7 +676,7 @@ async function resetTestDay() {
     const result = await response.json()
 
     todayScheduledTasks.value = result.scheduled_tasks
-    await Promise.all([loadTomorrowSetup(), loadTasks()])
+    await Promise.all([loadTomorrowSetup(), loadPendingReviewTasks(), loadTasks()])
     resetFeedback.value = `Tomorrow cleared. ${result.scheduled_tasks.length} tasks set for today.`
   } catch {
     resetFailed.value = true
@@ -1195,6 +1252,7 @@ async function submitTaskCompletion(type, task = selectedTask.value) {
     }
     tasks.value = tasks.value.map((item) => item.id === task.id ? result.data : item)
     await loadTodayTasks()
+    await loadPendingReviewTasks()
     completionRequest.value = null
     actionDialog.value?.close()
     pendingAction.value = null
@@ -1715,6 +1773,7 @@ onMounted(() => {
   checkServer()
   refreshToday()
   loadTomorrowSetup()
+  loadPendingReviewTasks()
   document.addEventListener('visibilitychange', refreshToday)
   todayRefreshInterval = window.setInterval(refreshToday, 60_000)
 })
@@ -1728,7 +1787,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="app-shell">
     <header class="app-header">
-      <button class="brand-lockup" type="button" aria-label="Planner home" @click="activeView = 'tomorrow'">
+      <button class="brand-lockup" type="button" aria-label="Planner home" @click="showTomorrow">
         <img class="brand-flower" src="/sunflower.svg?v=2" alt="" />
         <span class="wordmark">Planner</span>
       </button>
@@ -1746,15 +1805,15 @@ onBeforeUnmount(() => {
       </div>
 
       <template v-if="activeView === 'tomorrow'">
-        <section class="hero hero-tomorrow" :class="{ 'has-setup': tomorrowSetupSaved && !tomorrowSetupLoading && !tomorrowSetupLoadError }" aria-labelledby="tomorrow-title">
+        <section class="hero hero-tomorrow" :class="{ 'has-setup': tomorrowReady }" aria-labelledby="tomorrow-title">
           <div class="hero-content">
             <p class="hero-kicker">Your day ahead</p>
             <h1 id="tomorrow-title">Tomorrow<span class="title-dot">.</span></h1>
             <p class="hero-date">{{ tomorrowLabel }}</p>
-            <button class="hero-setup-button" :class="{ 'is-saved': tomorrowSetupSaved && !tomorrowSetupLoading && !tomorrowSetupLoadError }"
+            <button class="hero-setup-button" :class="{ 'is-saved': tomorrowReady }"
               type="button" @click="openTomorrowSetup">
               <span class="hero-setup-symbol" aria-hidden="true">
-                <svg v-if="tomorrowSetupSaved && !tomorrowSetupLoading && !tomorrowSetupLoadError" viewBox="0 0 24 24" fill="none">
+                <svg v-if="tomorrowReady" viewBox="0 0 24 24" fill="none">
                   <path d="m5 12 4.5 4.5L19 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
                 <svg v-else viewBox="0 0 24 24" fill="none">
@@ -1762,8 +1821,8 @@ onBeforeUnmount(() => {
                 </svg>
               </span>
               <span class="hero-setup-copy">
-                <strong>{{ tomorrowSetupLoading ? 'Loading setup…' : tomorrowSetupLoadError ? 'Setup unavailable' : tomorrowSetupSaved ? 'You’re set' : 'Set up tomorrow' }}</strong>
-                <small>{{ tomorrowSetupLoading ? 'One moment' : tomorrowSetupLoadError ? 'Tap to retry' : tomorrowSetupSaved ? tomorrowSetupSummary : 'Time to plan!' }}</small>
+                <strong>{{ tomorrowSetupLoading || pendingReviewLoading ? 'Loading setup…' : tomorrowSetupLoadError || pendingReviewError ? 'Setup unavailable' : pendingReviewTasks.length ? 'Review tasks' : tomorrowSetupSaved ? 'You’re set' : 'Set up tomorrow' }}</strong>
+                <small>{{ tomorrowSetupLoading || pendingReviewLoading ? 'One moment' : tomorrowSetupLoadError || pendingReviewError ? 'Tap to retry' : pendingReviewTasks.length ? 'Finish review to plan tomorrow' : tomorrowSetupSaved ? tomorrowSetupSummary : 'Time to plan!' }}</small>
               </span>
               <svg class="hero-setup-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
@@ -1789,10 +1848,10 @@ onBeforeUnmount(() => {
           @close="onTomorrowSetupClose" @click.self="closeTomorrowSetup">
           <header class="options-sheet-header tomorrow-setup-header">
             <div>
-              <h2 id="tomorrow-setup-title">Tomorrow setup</h2>
+              <h2 id="tomorrow-setup-title">Set up tomorrow</h2>
               <p>{{ tomorrowLabel }}</p>
             </div>
-            <button type="button" aria-label="Close tomorrow setup" @click="closeTomorrowSetup">×</button>
+            <button type="button" aria-label="Close setup" @click="closeTomorrowSetup">×</button>
           </header>
           <form class="tomorrow-setup-form" @submit.prevent="saveTomorrowSetup">
             <div class="options-sheet-body tomorrow-setup-body">
@@ -1802,6 +1861,33 @@ onBeforeUnmount(() => {
                 <button type="button" @click="loadTomorrowSetup">Try again</button>
               </div>
               <template v-else>
+                <section v-if="pendingReviewLoading || pendingReviewError || pendingReviewTasks.length" class="tomorrow-review" aria-labelledby="tomorrow-review-title">
+                  <div class="tomorrow-tasks-heading">
+                    <h3 id="tomorrow-review-title">Review tasks</h3>
+                    <span v-if="!pendingReviewLoading && !pendingReviewError">{{ pendingReviewTasks.length }}</span>
+                  </div>
+                  <p v-if="pendingReviewLoading" class="list-message">Loading…</p>
+                  <div v-else-if="pendingReviewError" class="tomorrow-setup-load-error" role="alert">
+                    <p>{{ pendingReviewError }}</p>
+                    <button type="button" @click="loadPendingReviewTasks">Try again</button>
+                  </div>
+                  <template v-else>
+                    <ul class="tomorrow-review-list">
+                      <li v-for="item in pendingReviewTasks" :key="item.id">
+                        <div class="tomorrow-review-task">
+                          <small>{{ reviewDateLabel(item.plan_date) }}</small>
+                          <strong>{{ item.task.title }}</strong>
+                        </div>
+                        <div class="tomorrow-review-choice" role="group" :aria-label="`Review ${item.task.title}`">
+                          <button type="button" :class="{ selected: reviewDoneById[item.id] }" :aria-pressed="reviewDoneById[item.id]"
+                            @click="reviewDoneById[item.id] = true">Done</button>
+                          <button type="button" :class="{ selected: !reviewDoneById[item.id] }" :aria-pressed="!reviewDoneById[item.id]"
+                            @click="reviewDoneById[item.id] = false">Not done</button>
+                        </div>
+                      </li>
+                    </ul>
+                  </template>
+                </section>
                 <fieldset class="tomorrow-energy">
                   <legend>Energy</legend>
                   <div class="choice-grid tomorrow-energy-options" role="radiogroup" aria-label="Energy for tomorrow">
@@ -1839,7 +1925,7 @@ onBeforeUnmount(() => {
 
                 <section class="tomorrow-tasks-setting" aria-labelledby="tomorrow-tasks-title">
                   <div class="tomorrow-tasks-heading">
-                    <h3 id="tomorrow-tasks-title">Tasks for tomorrow</h3>
+                    <h3 id="tomorrow-tasks-title">Add Tasks</h3>
                     <span>{{ tomorrowManualTaskIds.length + (tomorrowSetup.dinner_enabled ? 2 : 0) || 'None' }}</span>
                   </div>
                   <ul v-if="tomorrowSetup.dinner_enabled || tomorrowSelectedTasks.length" class="tomorrow-selected-tasks">
@@ -1889,7 +1975,7 @@ onBeforeUnmount(() => {
               </template>
             </div>
             <footer v-if="!tomorrowSetupLoadError" class="options-sheet-footer">
-              <button type="submit" :disabled="tomorrowSetupLoading || tomorrowSetupSaving">{{ tomorrowSetupSaving ? 'Saving…' : 'Save setup' }}</button>
+              <button type="submit" :disabled="tomorrowSetupLoading || tomorrowSetupSaving || pendingReviewLoading || Boolean(pendingReviewError)">{{ tomorrowSetupSaving ? 'Saving…' : 'Save setup' }}</button>
             </footer>
           </form>
         </dialog>
@@ -1919,11 +2005,12 @@ onBeforeUnmount(() => {
       </template>
 
       <template v-else-if="activeView === 'today'">
-        <header class="today-heading">
+        <header class="today-heading" :class="{ 'is-complete': todayAllDone && !todayTasksLoading && !todayTasksError }">
+          <img v-if="todayAllDone && !todayTasksLoading && !todayTasksError" class="today-finished-flower" src="/sunflower.svg?v=2" alt="" aria-hidden="true" />
           <p class="section-kicker">{{ todayLabel }}</p>
           <h1>Today<span class="title-dot">.</span></h1>
           <p v-if="!todayTasksLoading && !todayTasksError && todayScheduledTasks.length" class="today-progress-copy">
-            {{ todayDoneCount }} of {{ todayScheduledTasks.length }} done
+            {{ todayAllDone ? 'All done. Enjoy the rest of your day.' : `${todayDoneCount} of ${todayScheduledTasks.length} done` }}
           </p>
         </header>
 
@@ -2147,7 +2234,7 @@ onBeforeUnmount(() => {
 
       <template v-else-if="activeView === 'capture'">
         <header class="capture-heading">
-          <button class="project-back" type="button" @click="cancelCapture">← {{ captureForTomorrow ? 'Tomorrow setup' : editingTaskId !== null ? 'Task' : entryKind === 'project' ? 'Projects' : 'Tasks' }}</button>
+          <button class="project-back" type="button" @click="cancelCapture">← {{ captureForTomorrow ? 'Set up tomorrow' : editingTaskId !== null ? 'Task' : entryKind === 'project' ? 'Projects' : 'Tasks' }}</button>
           <h1>{{ editingTaskId !== null ? 'Edit task' : editingProjectId !== null ? 'Edit project' : `New ${entryKind}` }}</h1>
         </header>
 
@@ -2726,7 +2813,7 @@ onBeforeUnmount(() => {
         </svg>
         <span>Today</span>
       </button>
-      <button type="button" :aria-pressed="activeView === 'tomorrow'" @click="activeView = 'tomorrow'">
+      <button type="button" :aria-pressed="activeView === 'tomorrow'" @click="showTomorrow">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8" />
           <path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4m0-14.2-1.4 1.4M6.3 17.7l-1.4 1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />

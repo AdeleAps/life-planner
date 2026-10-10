@@ -77,7 +77,7 @@ class TaskCompletionController extends Controller
             ScheduledTask::query()
                 ->where('task_id', $task->id)
                 ->where('plan_date', CarbonImmutable::now('Europe/Riga')->toDateString())
-                ->where('status', 'planned')
+                ->whereIn('status', ['planned', 'not_completed'])
                 ->update(['status' => 'completed']);
 
             $projectCompleted = false;

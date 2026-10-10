@@ -17,6 +17,7 @@ Route::get('/v1/tasks', [TaskController::class, 'index'])->name('api.v1.tasks.in
 Route::get('/v1/planning-days/{date}/setup', [PlanningDayInputController::class, 'show'])->name('api.v1.planning-days.setup.show');
 Route::put('/v1/planning-days/{date}/setup', [PlanningDayInputController::class, 'update'])->name('api.v1.planning-days.setup.update');
 Route::get('/v1/planning-days/{date}/tasks', [ScheduledTaskController::class, 'index'])->name('api.v1.planning-days.tasks.index');
+Route::get('/v1/planning-review/pending', [ScheduledTaskController::class, 'pendingReview'])->name('api.v1.planning-review.pending');
 Route::post('/v1/dev/reset', DevResetController::class)->name('api.v1.dev.reset');
 Route::post('/v1/tasks', [TaskController::class, 'store'])->name('api.v1.tasks.store');
 Route::put('/v1/tasks/{task}', [TaskController::class, 'update'])->name('api.v1.tasks.update');

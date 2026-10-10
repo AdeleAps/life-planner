@@ -422,6 +422,77 @@ textarea:focus-visible {
   gap: 18px;
 }
 
+.tomorrow-review {
+  display: grid;
+  gap: 11px;
+  padding-bottom: 17px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tomorrow-review-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tomorrow-review-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #fff;
+}
+
+.tomorrow-review-task {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.tomorrow-review-task small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tomorrow-review-task strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.tomorrow-review-choice {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: #f0f6f2;
+}
+
+.tomorrow-review-choice button {
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.tomorrow-review-choice button.selected {
+  background: var(--sun);
+  color: var(--ink);
+}
+
 .tomorrow-energy {
   min-width: 0;
   margin: 0;
@@ -691,8 +762,31 @@ textarea:focus-visible {
   content: "";
 }
 
+.today-heading.is-complete {
+  background: linear-gradient(125deg, #075b49, #07936d);
+  color: #fff;
+}
+
+.today-heading.is-complete::after {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.today-finished-flower {
+  position: absolute;
+  z-index: 1;
+  top: 3px;
+  right: 6px;
+  width: 150px;
+  height: 150px;
+  transform: rotate(-12deg);
+}
+
 .today-heading .section-kicker {
   color: var(--green-deep);
+}
+
+.today-heading.is-complete .section-kicker {
+  color: #d1f6e6;
 }
 
 .today-heading h1 {
@@ -708,11 +802,22 @@ textarea:focus-visible {
   color: var(--green);
 }
 
+.today-heading.is-complete .title-dot {
+  color: var(--sun);
+}
+
 .today-progress-copy {
+  position: relative;
+  z-index: 2;
   margin: 16px 0 0;
   color: var(--green-deep);
   font-size: 15px;
   font-weight: 750;
+}
+
+.today-heading.is-complete .today-progress-copy {
+  max-width: 220px;
+  color: #fff;
 }
 
 .today-progress-track {

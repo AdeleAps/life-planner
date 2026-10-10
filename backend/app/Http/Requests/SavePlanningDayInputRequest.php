@@ -35,6 +35,9 @@ class SavePlanningDayInputRequest extends FormRequest
                 'distinct',
                 Rule::exists('tasks', 'id')->where('item_type', 'task')->where('lifecycle_state', 'active'),
             ],
+            'task_review' => ['sometimes', 'array', 'max:500'],
+            'task_review.*.scheduled_task_id' => ['required', 'integer', 'distinct', Rule::exists('scheduled_tasks', 'id')],
+            'task_review.*.done' => ['required', 'boolean'],
         ];
     }
 

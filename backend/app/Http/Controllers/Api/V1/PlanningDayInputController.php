@@ -9,6 +9,8 @@ use App\Http\Resources\ScheduledTaskResource;
 use App\Models\PlanningDayInput;
 use App\Models\ScheduledTask;
 use App\Models\Task;
+use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -41,10 +43,17 @@ class PlanningDayInputController extends Controller
         $this->validateDate($date);
         $values = $request->validated();
         $manualTaskIds = array_key_exists('manual_task_ids', $values) ? array_map('intval', $values['manual_task_ids']) : null;
-        unset($values['manual_task_ids']);
+        $taskReview = $values['task_review'] ?? null;
+        unset($values['manual_task_ids'], $values['task_review']);
         $values['dinner_dish'] = $values['dinner_enabled'] ? $values['dinner_dish'] : null;
 
-        $input = DB::transaction(function () use ($date, $values, $manualTaskIds): PlanningDayInput {
+        $input = DB::transaction(function () use ($date, $values, $manualTaskIds, $taskReview): PlanningDayInput {
+            $completedFinalTaskIds = $this->reviewPendingTasks($date, $taskReview);
+
+            if ($manualTaskIds !== null) {
+                $manualTaskIds = array_values(array_diff($manualTaskIds, $completedFinalTaskIds));
+            }
+
             if ($manualTaskIds !== null) {
                 $tasks = Task::query()
                     ->whereKey($manualTaskIds)
@@ -105,6 +114,119 @@ class PlanningDayInputController extends Controller
         });
 
         return $this->resourceWithScheduledTasks($input, $date);
+    }
+
+    /**
+     * @param  array<int, array{scheduled_task_id: int, done: bool}>|null  $taskReview
+     * @return array<int, int>
+     */
+    private function reviewPendingTasks(string $setupDate, ?array $taskReview): array
+    {
+        $today = CarbonImmutable::now('Europe/Riga');
+        $todayDate = $today->toDateString();
+        $tomorrowDate = $today->addDay()->toDateString();
+
+        if ($setupDate !== $tomorrowDate) {
+            if ($taskReview !== null) {
+                throw ValidationException::withMessages(['task_review' => 'Review tasks while setting up tomorrow.']);
+            }
+
+            return [];
+        }
+
+        $pending = ScheduledTask::query()
+            ->where('plan_date', '<=', $todayDate)
+            ->where('status', 'planned')
+            ->whereHas('task', fn (Builder $query): Builder => $query->where('lifecycle_state', 'active'))
+            ->with('task')
+            ->orderBy('plan_date')
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+
+        if ($pending->isEmpty() && $taskReview === null) {
+            return [];
+        }
+
+        $choices = collect($taskReview ?? [])->keyBy('scheduled_task_id');
+        $pendingIds = $pending->pluck('id')->sort()->values()->all();
+        $submittedIds = $choices->keys()->map(fn (int|string $id): int => (int) $id)->sort()->values()->all();
+
+        if ($pendingIds !== $submittedIds) {
+            throw ValidationException::withMessages(['task_review' => 'Today’s tasks changed. Reload the review and try again.']);
+        }
+
+        $reviewedOccurrences = [];
+        $completedFinalTaskIds = [];
+
+        foreach ($pending as $assignment) {
+            $done = (bool) $choices->get($assignment->id)['done'];
+            $occurrenceKey = $assignment->task_id.'|'.$assignment->plan_date;
+
+            if (array_key_exists($occurrenceKey, $reviewedOccurrences)) {
+                if ($reviewedOccurrences[$occurrenceKey] !== $done) {
+                    throw ValidationException::withMessages(['task_review' => 'Choose the same result for every copy of a task on one day.']);
+                }
+
+                continue;
+            }
+
+            $reviewedOccurrences[$occurrenceKey] = $done;
+
+            if (! $done) {
+                ScheduledTask::query()->where('task_id', $assignment->task_id)
+                    ->where('plan_date', $assignment->plan_date)
+                    ->where('status', 'planned')
+                    ->update(['status' => 'not_completed']);
+
+                continue;
+            }
+
+            $task = Task::query()->lockForUpdate()->findOrFail($assignment->task_id);
+
+            if ($task->lifecycle_state !== 'active') {
+                throw ValidationException::withMessages(['task_review' => 'A task changed. Reload the review and try again.']);
+            }
+
+            $completionType = $task->recurrence_type !== 'one_time'
+                ? 'occurrence'
+                : ($task->is_multi_session ? 'session' : 'final');
+
+            $task->completions()->create([
+                'client_request_id' => (string) Str::uuid(),
+                'completion_type' => $completionType,
+                'completed_at' => now(),
+            ]);
+
+            if ($completionType === 'final') {
+                $task->lifecycle_state = 'completed';
+                $completedFinalTaskIds[] = $task->id;
+            }
+
+            $task->revision++;
+            $task->save();
+
+            ScheduledTask::query()->where('task_id', $task->id)
+                ->where('plan_date', $assignment->plan_date)
+                ->where('status', 'planned')
+                ->update(['status' => 'completed']);
+
+            if ($completionType === 'final' && $task->project_id !== null) {
+                $project = Task::query()->where('item_type', 'project')
+                    ->lockForUpdate()->findOrFail($task->project_id);
+                $hasUnfinishedSteps = $project->steps()
+                    ->where('lifecycle_state', '!=', 'completed')
+                    ->lockForUpdate()->first(['id']) !== null;
+
+                if ($project->lifecycle_state === 'active' && ! $hasUnfinishedSteps) {
+                    $project->lifecycle_state = 'completed';
+                    $project->revision++;
+                    $project->save();
+                }
+            }
+        }
+
+        return $completedFinalTaskIds;
     }
 
     private function syncDinnerTasks(string $date, bool $dinnerEnabled): void

@@ -2,13 +2,105 @@
 
 namespace Tests\Feature;
 
+use App\Models\ScheduledTask;
 use App\Models\Task;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class PlanningDayInputTest extends TestCase
 {
     use RefreshDatabase;
+
+    public function test_tomorrow_setup_requires_review_and_only_unfinished_assignments_appear(): void
+    {
+        $today = CarbonImmutable::now('Europe/Riga')->toDateString();
+        $tomorrow = CarbonImmutable::now('Europe/Riga')->addDay()->toDateString();
+        $unfinishedTask = Task::factory()->create(['title' => 'Unfinished']);
+        $finishedTask = Task::factory()->create(['title' => 'Already finished']);
+        $unfinished = ScheduledTask::factory()->create(['task_id' => $unfinishedTask->id, 'plan_date' => $today]);
+        ScheduledTask::factory()->create(['task_id' => $finishedTask->id, 'plan_date' => $today]);
+
+        $this->postJson("/api/v1/tasks/{$finishedTask->id}/completions", [
+            'client_request_id' => (string) Str::uuid(),
+            'revision' => $finishedTask->revision,
+            'completion_type' => 'final',
+        ])->assertCreated();
+
+        $this->getJson('/api/v1/planning-review/pending')->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', $unfinished->id);
+
+        $settings = ['energy_level' => 'standard', 'day_off' => false, 'dinner_enabled' => false];
+        $this->putJson("/api/v1/planning-days/{$tomorrow}/setup", $settings)
+            ->assertUnprocessable()->assertJsonValidationErrors(['task_review']);
+
+        $this->assertDatabaseMissing('planning_day_inputs', ['plan_date' => $tomorrow]);
+        $this->assertDatabaseHas('scheduled_tasks', ['id' => $unfinished->id, 'status' => 'planned']);
+        $this->assertDatabaseCount('task_completions', 1);
+    }
+
+    public function test_review_defaults_can_be_saved_as_completions_or_explicitly_left_unfinished(): void
+    {
+        $today = CarbonImmutable::now('Europe/Riga')->toDateString();
+        $tomorrow = CarbonImmutable::now('Europe/Riga')->addDay()->toDateString();
+        $completedTask = Task::factory()->create(['title' => 'Complete in review']);
+        $unfinishedTask = Task::factory()->create(['title' => 'Leave unfinished']);
+        $completed = ScheduledTask::factory()->create(['task_id' => $completedTask->id, 'plan_date' => $today]);
+        $unfinished = ScheduledTask::factory()->create(['task_id' => $unfinishedTask->id, 'plan_date' => $today]);
+        $settings = [
+            'energy_level' => 'standard',
+            'day_off' => false,
+            'dinner_enabled' => false,
+            'task_review' => [
+                ['scheduled_task_id' => $completed->id, 'done' => true],
+                ['scheduled_task_id' => $unfinished->id, 'done' => false],
+            ],
+        ];
+
+        $this->putJson("/api/v1/planning-days/{$tomorrow}/setup", $settings)->assertCreated();
+        $this->assertDatabaseHas('scheduled_tasks', ['id' => $completed->id, 'status' => 'completed']);
+        $this->assertDatabaseHas('scheduled_tasks', ['id' => $unfinished->id, 'status' => 'not_completed']);
+        $this->assertDatabaseHas('tasks', ['id' => $completedTask->id, 'lifecycle_state' => 'completed']);
+        $this->assertDatabaseHas('tasks', ['id' => $unfinishedTask->id, 'lifecycle_state' => 'active']);
+        $this->assertDatabaseHas('task_completions', ['task_id' => $completedTask->id, 'completion_type' => 'final']);
+        $this->assertDatabaseCount('task_completions', 1);
+        $this->getJson('/api/v1/planning-review/pending')->assertOk()->assertJsonCount(0, 'data');
+
+        $this->putJson("/api/v1/planning-days/{$tomorrow}/setup", [
+            'energy_level' => 'low',
+            'day_off' => false,
+            'dinner_enabled' => false,
+            'task_review' => [],
+        ])->assertOk();
+        $this->assertDatabaseCount('task_completions', 1);
+    }
+
+    public function test_missed_day_stays_pending_until_review_and_recurring_review_records_an_occurrence(): void
+    {
+        $yesterday = CarbonImmutable::now('Europe/Riga')->subDay()->toDateString();
+        $tomorrow = CarbonImmutable::now('Europe/Riga')->addDay()->toDateString();
+        $task = Task::factory()->create([
+            'recurrence_type' => 'schedule',
+            'recurrence_rule' => ['unit' => 'day', 'interval' => 1],
+        ]);
+        $assignment = ScheduledTask::factory()->create(['task_id' => $task->id, 'plan_date' => $yesterday]);
+
+        $this->getJson('/api/v1/planning-review/pending')->assertOk()
+            ->assertJsonPath('data.0.plan_date', $yesterday);
+
+        $this->putJson("/api/v1/planning-days/{$tomorrow}/setup", [
+            'energy_level' => 'standard',
+            'day_off' => false,
+            'dinner_enabled' => false,
+            'task_review' => [['scheduled_task_id' => $assignment->id, 'done' => true]],
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('scheduled_tasks', ['id' => $assignment->id, 'status' => 'completed']);
+        $this->assertDatabaseHas('task_completions', ['task_id' => $task->id, 'completion_type' => 'occurrence']);
+        $this->assertDatabaseHas('tasks', ['id' => $task->id, 'lifecycle_state' => 'active']);
+    }
 
     public function test_tomorrow_setup_defaults_save_and_reload_by_date(): void
     {
