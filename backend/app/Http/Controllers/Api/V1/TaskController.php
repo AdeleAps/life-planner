@@ -7,6 +7,8 @@ use App\Http\Requests\AttachTaskToProjectRequest;
 use App\Http\Requests\StoreTaskRequest;
 use App\Http\Requests\UpdateTaskRequest;
 use App\Http\Resources\TaskResource;
+use App\Models\PlanningDayInput;
+use App\Models\ScheduledTask;
 use App\Models\Task;
 use App\Support\TaskDependencyGraph;
 use Illuminate\Http\JsonResponse;
@@ -181,6 +183,27 @@ class TaskController extends Controller
                 ->findOrFail($task->id);
 
             $projectId = $task->project_id;
+
+            if (in_array($task->source, ['dinner_groceries', 'dinner_cooking'], true)) {
+                $dates = ScheduledTask::query()->where('task_id', $task->id)->pluck('plan_date');
+
+                foreach ($dates as $date) {
+                    $input = PlanningDayInput::query()->where('plan_date', $date)->lockForUpdate()->first();
+
+                    if ($input !== null && $input->dinner_enabled) {
+                        $input->dinner_enabled = false;
+                        $input->dinner_dish = null;
+                        $input->revision++;
+                        $input->save();
+                    }
+
+                    ScheduledTask::query()->where('plan_date', $date)
+                        ->whereIn('source', ['dinner_groceries', 'dinner_cooking'])
+                        ->where('task_id', '!=', $task->id)
+                        ->update(['source' => 'manual']);
+                }
+            }
+
             $task->delete();
 
             $projectEmpty = $projectId !== null

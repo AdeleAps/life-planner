@@ -44,6 +44,8 @@ Route::post('/v1/planning-days/{date}/draft', PlanningDraftController::class)->n
 Route::get('/v1/planning-days/{date}/plan', [PlanningPlanController::class, 'show'])->name('api.v1.planning-days.plan.show');
 Route::post('/v1/planning-days/{date}/plan', [PlanningPlanController::class, 'store'])->name('api.v1.planning-days.plan.store');
 Route::get('/v1/planning-days/{date}/tasks', [ScheduledTaskController::class, 'index'])->name('api.v1.planning-days.tasks.index');
+Route::patch('/v1/scheduled-tasks/{scheduledTask}', [ScheduledTaskController::class, 'update'])->name('api.v1.scheduled-tasks.update');
+Route::delete('/v1/scheduled-tasks/{scheduledTask}', [ScheduledTaskController::class, 'destroy'])->name('api.v1.scheduled-tasks.destroy');
 Route::get('/v1/planning-review/pending', [ScheduledTaskController::class, 'pendingReview'])->name('api.v1.planning-review.pending');
 Route::post('/v1/dev/reset', DevResetController::class)->name('api.v1.dev.reset');
 Route::post('/v1/tasks', [TaskController::class, 'store'])->name('api.v1.tasks.store');

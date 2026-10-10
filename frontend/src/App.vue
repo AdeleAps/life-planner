@@ -165,6 +165,8 @@ const actionDialog = ref(null)
 const pendingAction = ref(null)
 const actionBusy = ref(false)
 const actionError = ref('')
+const scheduledActionDate = ref('')
+const calendarRef = ref(null)
 const selectedTaskId = ref(null)
 const taskReturnView = ref('tasks')
 const taskCompletions = ref([])
@@ -1859,6 +1861,66 @@ function openTaskDelete(task) {
   actionDialog.value?.showModal()
 }
 
+function openScheduledTaskAction(assignment) {
+  pendingAction.value = { kind: 'scheduled-task', assignment, mode: 'options' }
+  scheduledActionDate.value = assignment.plan_date <= todayDate.value ? tomorrowDate.value : assignment.plan_date
+  actionError.value = ''
+  actionDialog.value?.showModal()
+}
+
+function canRescheduleAssignment(assignment) {
+  return ['planned', 'not_completed'].includes(assignment.status) && assignment.task.lifecycle_state === 'active'
+    && !['dinner_groceries', 'dinner_cooking'].includes(assignment.source)
+}
+
+function canRemoveAssignment(assignment) {
+  return assignment.status === 'planned' && canRescheduleAssignment(assignment)
+}
+
+function startScheduledTaskDelete() {
+  pendingAction.value = { kind: 'delete-task', task: pendingAction.value.assignment.task }
+  actionError.value = ''
+}
+
+function cancelActionStep() {
+  if (pendingAction.value?.kind === 'scheduled-task' && pendingAction.value.mode === 'move') {
+    pendingAction.value.mode = 'options'
+    actionError.value = ''
+    return
+  }
+  closeActionDialog()
+}
+
+async function changeScheduledTask(method) {
+  const assignment = pendingAction.value?.assignment
+  if (!assignment || actionBusy.value) return
+  if (method === 'PATCH' && scheduledActionDate.value === assignment.plan_date) {
+    actionError.value = 'Choose a different date.'
+    return
+  }
+
+  actionBusy.value = true
+  actionError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/scheduled-tasks/${assignment.id}`, {
+      method,
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      ...(method === 'PATCH' ? { body: JSON.stringify({ plan_date: scheduledActionDate.value }) } : {}),
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(result.errors?.plan_date?.[0] || result.errors?.scheduled_task?.[0] || 'Could not change this task. Try again.')
+
+    actionDialog.value?.close()
+    pendingAction.value = null
+    await Promise.all([loadTodayTasks(), loadTomorrowSetup(), loadPendingReviewTasks(true), calendarRef.value?.refresh?.()])
+  } catch (error) {
+    actionError.value = error.message || 'Could not change this task. Try again.'
+  } finally {
+    actionBusy.value = false
+  }
+}
+
 async function openProjectDelete(project) {
   await loadProjects()
   const currentProject = projects.value.find((item) => item.id === project.id) || project
@@ -1933,7 +1995,7 @@ async function deleteTask() {
       selectedTaskId.value = null
       activeView.value = taskReturnView.value
     }
-    await Promise.all([loadProjects(), loadTomorrowSetup(), loadTodayTasks(), loadPendingReviewTasks(true)])
+    await Promise.all([loadProjects(), loadTomorrowSetup(), loadTodayTasks(), loadPendingReviewTasks(true), calendarRef.value?.refresh?.()])
     if (setupDraft) {
       const { manualTaskIds, ...setupValues } = setupDraft
       Object.assign(tomorrowSetup, setupValues)
@@ -2510,7 +2572,12 @@ onBeforeUnmount(() => {
                   </div>
                 </template>
               </div>
-              <span>{{ item.task.type === 'day' ? 'Day' : 'Evening' }}</span>
+              <div class="tomorrow-planned-actions">
+                <span>{{ item.task.type === 'day' ? 'Day' : 'Evening' }}</span>
+                <button class="scheduled-task-menu" type="button" :aria-label="`Manage ${item.task.title}`" @click="openScheduledTaskAction(item)">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+                </button>
+              </div>
             </li>
           </ul>
         </section>
@@ -2562,13 +2629,18 @@ onBeforeUnmount(() => {
                     </div>
                   </div>
                 </div>
-                <button v-if="item.task.lifecycle_state === 'active'" class="today-finish-button" :class="{ 'is-repeat': isTodayTaskDone(item) }"
-                  type="button" :disabled="completionBusy || actionBusy"
-                  :aria-label="`${isTodayTaskDone(item) ? 'Finish again' : 'Finish'}: ${item.task.title}`"
-                  @click="openQuickCompletion(todayLibraryTask(item) || item.task)">
-                  <svg v-if="isTodayTaskDone(item)" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
-                  <svg v-else viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4.5 12 5 5L19.5 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
-                </button>
+                <div class="today-task-actions">
+                  <button v-if="item.task.lifecycle_state === 'active'" class="today-finish-button" :class="{ 'is-repeat': isTodayTaskDone(item) }"
+                    type="button" :disabled="completionBusy || actionBusy"
+                    :aria-label="`${isTodayTaskDone(item) ? 'Finish again' : 'Finish'}: ${item.task.title}`"
+                    @click="openQuickCompletion(todayLibraryTask(item) || item.task)">
+                    <svg v-if="isTodayTaskDone(item)" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+                    <svg v-else viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4.5 12 5 5L19.5 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                  </button>
+                  <button class="scheduled-task-menu" type="button" :aria-label="`Manage ${item.task.title}`" @click="openScheduledTaskAction(item)">
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+                  </button>
+                </div>
               </li>
             </ul>
           </section>
@@ -3154,7 +3226,7 @@ onBeforeUnmount(() => {
       </template>
 
       <template v-else-if="activeView === 'calendar'">
-        <PlannerCalendar />
+        <PlannerCalendar ref="calendarRef" @manage-task="openScheduledTaskAction" />
       </template>
 
       <template v-else>
@@ -3290,8 +3362,8 @@ onBeforeUnmount(() => {
 
     <dialog ref="actionDialog" class="options-sheet action-sheet" aria-labelledby="action-sheet-title" @click.self="closeActionDialog" @cancel="actionBusy && $event.preventDefault()">
       <header class="options-sheet-header">
-        <h2 id="action-sheet-title">{{ pendingAction?.kind === 'quick-completion' ? 'Finish task' : pendingAction?.kind === 'repeat-completion' ? 'Finish again today?' : pendingAction?.kind === 'delete-task' ? 'Delete task?' : pendingAction?.kind === 'empty-project' ? 'Delete empty project?' : 'Delete project?' }}</h2>
-        <p v-if="pendingAction?.kind === 'quick-completion'" class="action-task-subtitle">{{ pendingAction.task.title }}</p>
+        <h2 id="action-sheet-title">{{ pendingAction?.kind === 'scheduled-task' ? (pendingAction.mode === 'move' ? 'Reschedule task' : 'Manage task') : pendingAction?.kind === 'quick-completion' ? 'Finish task' : pendingAction?.kind === 'repeat-completion' ? 'Finish again today?' : pendingAction?.kind === 'delete-task' ? 'Delete task?' : pendingAction?.kind === 'empty-project' ? 'Delete empty project?' : 'Delete project?' }}</h2>
+        <p v-if="pendingAction?.kind === 'quick-completion' || pendingAction?.kind === 'scheduled-task'" class="action-task-subtitle">{{ pendingAction.kind === 'scheduled-task' ? pendingAction.assignment.task.title : pendingAction.task.title }}</p>
       </header>
       <div class="options-sheet-body action-sheet-body">
         <p v-if="pendingAction?.kind === 'repeat-completion'">“{{ pendingAction.task.title }}” already has {{ pendingAction.todayCount }} {{ pendingAction.todayCount === 1 ? 'completion' : 'completions' }} today. Save another?</p>
@@ -3299,9 +3371,22 @@ onBeforeUnmount(() => {
         <p v-else-if="pendingAction?.kind === 'empty-project'">“{{ pendingAction.project.title }}” has no tasks left. Delete it too?</p>
         <p v-else-if="pendingAction?.kind === 'delete-empty-project'">Delete “{{ pendingAction.project.title }}” permanently?</p>
         <p v-else-if="pendingAction?.kind === 'delete-project'">What should happen to the {{ pendingAction.project.steps_count ?? 0 }} {{ pendingAction.project.steps_count === 1 ? 'task' : 'tasks' }} in “{{ pendingAction.project.title }}”?</p>
+        <div v-if="pendingAction?.kind === 'scheduled-task' && pendingAction.mode === 'move'" class="scheduled-task-date">
+          <PlannerDatePicker v-model="scheduledActionDate" label="Move to" :invalid="!!actionError" />
+        </div>
         <p v-if="actionError" class="form-error" role="alert">{{ actionError }}</p>
         <div class="action-sheet-buttons">
-          <template v-if="pendingAction?.kind === 'quick-completion'">
+          <template v-if="pendingAction?.kind === 'scheduled-task'">
+            <template v-if="pendingAction.mode === 'move'">
+              <button class="action-preserve" type="button" :disabled="actionBusy" @click="changeScheduledTask('PATCH')">{{ actionBusy ? 'Moving…' : 'Save new date' }}</button>
+            </template>
+            <template v-else>
+              <button v-if="canRescheduleAssignment(pendingAction.assignment)" class="action-preserve" type="button" :disabled="actionBusy" @click="pendingAction.mode = 'move'; actionError = ''">Reschedule</button>
+              <button v-if="canRemoveAssignment(pendingAction.assignment)" class="action-preserve action-secondary" type="button" :disabled="actionBusy" @click="changeScheduledTask('DELETE')">{{ actionBusy ? 'Removing…' : 'Remove from day' }}</button>
+              <button class="action-destructive" type="button" :disabled="actionBusy" @click="startScheduledTaskDelete">Delete task</button>
+            </template>
+          </template>
+          <template v-else-if="pendingAction?.kind === 'quick-completion'">
             <template v-if="pendingAction.task.is_multi_session">
               <button class="action-preserve" type="button" :disabled="actionBusy" @click="requestTaskCompletion('session', pendingAction.task)">Finish session</button>
               <button class="action-preserve action-secondary" type="button" :disabled="actionBusy" @click="requestTaskCompletion('final', pendingAction.task)">Complete task</button>
@@ -3326,7 +3411,7 @@ onBeforeUnmount(() => {
           <template v-else-if="pendingAction?.kind === 'empty-project' || pendingAction?.kind === 'delete-empty-project'">
             <button class="action-destructive" type="button" :disabled="actionBusy" @click="deleteProject('detach')">{{ actionBusy ? 'Deleting…' : 'Delete project' }}</button>
           </template>
-          <button class="action-cancel" type="button" :disabled="actionBusy" @click="closeActionDialog">{{ pendingAction?.kind === 'empty-project' ? 'Keep project' : 'Cancel' }}</button>
+          <button class="action-cancel" type="button" :disabled="actionBusy" @click="cancelActionStep">{{ pendingAction?.kind === 'empty-project' ? 'Keep project' : pendingAction?.kind === 'scheduled-task' && pendingAction.mode === 'move' ? 'Back' : 'Cancel' }}</button>
         </div>
       </div>
     </dialog>

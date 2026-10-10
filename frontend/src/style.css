@@ -1232,6 +1232,38 @@ textarea:focus-visible {
   font-weight: 700;
 }
 
+.tomorrow-planned-actions,
+.today-task-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+}
+
+.scheduled-task-menu {
+  display: grid;
+  flex: 0 0 39px;
+  place-items: center;
+  width: 39px;
+  height: 39px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f9fcfa;
+  color: var(--green-deep);
+  cursor: pointer;
+}
+
+.scheduled-task-menu:hover {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.scheduled-task-menu svg {
+  width: 20px;
+  height: 20px;
+}
+
 .today-heading {
   position: relative;
   overflow: hidden;
@@ -1849,6 +1881,10 @@ textarea:focus-visible {
   font-weight: 500;
   line-height: 1.4;
   overflow-wrap: anywhere;
+}
+
+.scheduled-task-date {
+  margin: 0 0 18px;
 }
 
 .action-sheet-buttons {

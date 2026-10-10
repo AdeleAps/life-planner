@@ -38,12 +38,17 @@ class PlanningPlanController extends Controller
                 && ($draft['existing_task_ids'] ?? null) === $existingTaskIds
                 && (($draft['published'] ?? false) || ($draft['brief_fingerprint'] ?? null) === $briefBuilder->fingerprint($brief)));
         $cycleComplete = PlanningCycle::query()->where('plan_date', $date)->whereNotNull('plan_completed_at')->exists();
-        $published = $cycleComplete && ($input->day_off || ($latest['published'] ?? false));
+        $published = $cycleComplete;
+        $plannerTaskIds = ScheduledTask::query()->where('plan_date', $date)->where('source', 'planner')
+            ->orderBy('task_id')->pluck('task_id')->map(fn (int|string $id): int => (int) $id)->all();
+        $publishedTaskIds = collect($latest['published_task_ids'] ?? [])->sort()->values()->all();
+        $note = $published && $latest !== null && $publishedTaskIds === $plannerTaskIds
+            ? ($latest['note'] ?? '') : '';
 
         return response()->json(['data' => [
             'draft' => $latest,
             'published' => $published,
-            'note' => $published ? ($latest['note'] ?? '') : '',
+            'note' => $note,
             'deadline_pressure_warnings' => $deadlinePressureWarnings,
         ]]);
     }

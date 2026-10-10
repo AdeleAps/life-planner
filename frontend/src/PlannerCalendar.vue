@@ -2,6 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import PlannerDatePicker from './PlannerDatePicker.vue'
 
+const emit = defineEmits(['manage-task'])
+
 function dateKey(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
@@ -130,6 +132,7 @@ async function removeDayOff(period) {
 }
 
 onMounted(loadMonth)
+defineExpose({ refresh: loadMonth })
 </script>
 
 <template>
@@ -179,10 +182,15 @@ onMounted(loadMonth)
         <div v-if="selectedDay.scheduled_tasks?.length" class="days-calendar-tasks">
           <h3>Tasks</h3>
           <div v-for="assignment in selectedDay.scheduled_tasks" :key="assignment.id" class="days-calendar-task" :class="{ 'is-completed': assignment.status === 'completed' }">
-            <span class="days-calendar-task-title">{{ assignment.task.title }}</span>
-            <span class="days-calendar-task-meta">
-              {{ assignment.task.type === 'day' ? 'Day' : 'Evening' }}<template v-if="assignment.status === 'completed'"> · Done</template><template v-else-if="assignment.status === 'not_completed'"> · Not done</template><template v-else-if="assignment.source === 'advance_accepted'"> · Accepted</template>
+            <span class="days-calendar-task-copy">
+              <span class="days-calendar-task-title">{{ assignment.task.title }}</span>
+              <span class="days-calendar-task-meta">
+                {{ assignment.task.type === 'day' ? 'Day' : 'Evening' }}<template v-if="assignment.status === 'completed'"> · Done</template><template v-else-if="assignment.status === 'not_completed'"> · Not done</template><template v-else-if="assignment.source === 'advance_accepted'"> · Accepted</template>
+              </span>
             </span>
+            <button class="days-calendar-task-menu" type="button" :aria-label="`Manage ${assignment.task.title}`" @click="emit('manage-task', assignment)">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+            </button>
           </div>
         </div>
       </template>
@@ -249,10 +257,13 @@ onMounted(loadMonth)
 .days-calendar-event button { border: 0; background: transparent; color: var(--green-deep); font-size: 13px; font-weight: 750; cursor: pointer; }
 .days-calendar-tasks { display: grid; gap: 8px; margin-top: 17px; padding-top: 15px; border-top: 1px solid var(--line); }
 .days-calendar-tasks h3 { margin: 0 0 2px; font-size: 15px; }
-.days-calendar-task { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 11px 13px; border-radius: 12px; background: #f5f9f7; }
+.days-calendar-task { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 10px 9px 13px; border-radius: 12px; background: #f5f9f7; }
 .days-calendar-task.is-completed { color: var(--muted); }
+.days-calendar-task-copy { display: grid; gap: 2px; min-width: 0; }
 .days-calendar-task-title { min-width: 0; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
-.days-calendar-task-meta { flex: none; color: var(--muted); font-size: 12px; }
+.days-calendar-task-meta { color: var(--muted); font-size: 12px; }
+.days-calendar-task-menu { display: grid; flex: none; place-items: center; width: 36px; height: 36px; padding: 0; border: 1px solid var(--line); border-radius: 11px; background: white; color: var(--green-deep); cursor: pointer; }
+.days-calendar-task-menu svg { width: 18px; height: 18px; }
 .days-calendar-error { margin: 0; color: var(--error); font-size: 14px; }
 .days-calendar-error button { border: 0; background: transparent; color: inherit; font-weight: 750; text-decoration: underline; cursor: pointer; }
 .days-off-dialog[open] { position: fixed; z-index: 30; top: auto; right: 0; bottom: 0; left: 0; width: min(100%, 640px); max-width: none; max-height: min(90dvh, 700px); margin: 0 auto; padding: 0; border: 1px solid var(--line); border-radius: 25px 25px 0 0; background: white; color: var(--ink); box-shadow: 0 -18px 60px #12392d30; overflow: auto; }
