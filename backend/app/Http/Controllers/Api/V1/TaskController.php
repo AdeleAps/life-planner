@@ -230,6 +230,7 @@ class TaskController extends Controller
         return [
             'title' => $input['title'],
             'description' => $input['description'] ?? null,
+            'special_instructions' => $input['special_instructions'] ?? null,
             'project_id' => $input['project_id'] ?? null,
             'type' => $taskType,
             'priority' => $taskType === 'day' ? null : ($input['priority'] ?? 'standard'),

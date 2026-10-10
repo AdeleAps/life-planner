@@ -34,6 +34,7 @@ class StoreTaskRequest extends FormRequest
             'client_request_id' => ['required', 'uuid'],
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:5000'],
+            'special_instructions' => ['nullable', 'string', 'max:5000'],
             'project_id' => [
                 'nullable',
                 Rule::prohibitedIf($recurrenceType !== 'one_time'),

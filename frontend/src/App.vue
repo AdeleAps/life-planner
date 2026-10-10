@@ -69,6 +69,7 @@ const deadlineDetail = ref(null)
 const dependenciesDetail = ref(null)
 const projectDetail = ref(null)
 const contextDetail = ref(null)
+const specialInstructionsDetail = ref(null)
 const dependencySearch = ref('')
 const dependencySearchInput = ref(null)
 const scheduleIntervalInput = ref(null)
@@ -224,6 +225,7 @@ const deadlineForm = reactive(initialDeadlineValues())
 const taskForm = reactive({
   title: '',
   description: '',
+  special_instructions: '',
   type: 'evening',
   energy_cost: 'standard',
   priority: 'standard',
@@ -424,6 +426,7 @@ const optionsSummary = computed(() => {
     changes.push(projects.value.find((project) => project.id === taskForm.project_id)?.title || 'Project')
   }
   if (taskForm.description.trim()) changes.push('Description')
+  if (entryKind.value === 'task' && taskForm.special_instructions.trim()) changes.push('Special instructions')
   if (taskForm.dependency_ids.length) changes.push(`${taskForm.dependency_ids.length} ${taskForm.dependency_ids.length === 1 ? 'dependency' : 'dependencies'}`)
 
   if (changes.length === 0) return 'Defaults'
@@ -835,6 +838,7 @@ async function openTaskEdit(task) {
 
   taskForm.title = task.title
   taskForm.description = task.description || ''
+  taskForm.special_instructions = task.special_instructions || ''
   taskForm.energy_cost = task.energy_cost
   taskForm.priority = task.priority
   taskForm.is_multi_session = Boolean(task.is_multi_session)
@@ -1051,7 +1055,7 @@ async function deleteProject(taskAction) {
 function closeOtherDetails(event) {
   if (!event.target.open) return
 
-  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, advanceNoticeDetail.value, dayPreferenceDetail.value, deadlineDetail.value, projectDetail.value, dependenciesDetail.value, contextDetail.value]) {
+  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, advanceNoticeDetail.value, dayPreferenceDetail.value, deadlineDetail.value, projectDetail.value, dependenciesDetail.value, contextDetail.value, specialInstructionsDetail.value]) {
     if (detail && detail !== event.target) detail.open = false
   }
 }
@@ -1073,7 +1077,7 @@ function finishPriorityChoice() {
 }
 
 function closeAllDetails() {
-  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, advanceNoticeDetail.value, dayPreferenceDetail.value, deadlineDetail.value, projectDetail.value, dependenciesDetail.value, contextDetail.value]) {
+  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, advanceNoticeDetail.value, dayPreferenceDetail.value, deadlineDetail.value, projectDetail.value, dependenciesDetail.value, contextDetail.value, specialInstructionsDetail.value]) {
     if (detail) detail.open = false
   }
 }
@@ -1081,6 +1085,7 @@ function closeAllDetails() {
 function resetCaptureForm() {
   taskForm.title = ''
   taskForm.description = ''
+  taskForm.special_instructions = ''
   taskForm.type = 'evening'
   taskForm.energy_cost = 'standard'
   taskForm.priority = 'standard'
@@ -1132,6 +1137,7 @@ async function saveTask() {
         taskInput.deadline_is_hard = deadlineForm.is_hard
       }
     } else {
+      taskInput.special_instructions = taskForm.special_instructions.trim() || null
       taskInput.type = taskForm.type
       taskInput.recurrence_type = taskForm.recurrence_type
       taskInput.project_id = taskForm.project_id
@@ -1295,6 +1301,10 @@ onBeforeUnmount(() => {
           </header>
           <section class="task-detail" aria-label="Task details">
             <p v-if="selectedTask.description" class="task-detail-description">{{ selectedTask.description }}</p>
+            <div v-if="selectedTask.special_instructions" class="task-detail-instructions">
+              <h2>Special instructions</h2>
+              <p>{{ selectedTask.special_instructions }}</p>
+            </div>
             <dl class="task-detail-facts">
               <div><dt>Type</dt><dd>{{ selectedTask.type === 'day' ? 'Day' : 'Evening' }}</dd></div>
               <div v-if="selectedTask.project_id"><dt>Project</dt><dd>{{ projects.find((project) => project.id === selectedTask.project_id)?.title || 'Project' }}</dd></div>
@@ -1796,6 +1806,19 @@ onBeforeUnmount(() => {
                     <label class="field">
                       <span class="visually-hidden">Description</span>
                       <textarea v-model="taskForm.description" rows="3" maxlength="5000"></textarea>
+                    </label>
+                  </div>
+                </details>
+
+                <details v-if="entryKind === 'task'" ref="specialInstructionsDetail" class="form-detail" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Special instructions</span>
+                    <span class="detail-value">{{ taskForm.special_instructions.trim() ? 'Added' : 'Optional' }}</span>
+                  </summary>
+                  <div class="detail-content">
+                    <label class="field">
+                      <span class="visually-hidden">Special instructions</span>
+                      <textarea v-model="taskForm.special_instructions" rows="3" maxlength="5000"></textarea>
                     </label>
                   </div>
                 </details>

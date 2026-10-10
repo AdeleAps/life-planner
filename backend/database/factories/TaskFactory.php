@@ -22,6 +22,7 @@ class TaskFactory extends Factory
             'client_request_id' => (string) Str::uuid(),
             'title' => fake()->sentence(4),
             'description' => null,
+            'special_instructions' => null,
             'source' => 'seed',
             'item_type' => 'task',
             'project_id' => null,

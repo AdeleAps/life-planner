@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'client_request_id',
     'title',
     'description',
+    'special_instructions',
     'source',
     'item_type',
     'project_id',

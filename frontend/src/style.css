@@ -2388,6 +2388,26 @@ textarea:focus-visible {
   white-space: pre-wrap;
 }
 
+.task-detail-instructions {
+  margin-bottom: 21px;
+  padding: 15px 17px;
+  border-left: 4px solid var(--sun);
+  border-radius: 0 12px 12px 0;
+  background: #fffbeb;
+}
+
+.task-detail-instructions h2 {
+  margin: 0 0 5px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.task-detail-instructions p {
+  margin: 0;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .task-detail-facts {
   margin: 0;
 }

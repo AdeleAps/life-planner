@@ -18,6 +18,7 @@ class TaskResource extends JsonResource
             'id' => $this->id,
             'title' => $this->title,
             'description' => $this->description,
+            'special_instructions' => $this->special_instructions,
             'dependencies' => $this->dependencies->isEmpty() ? null : $this->dependencies->map(fn ($dependency): array => [
                 'id' => $dependency->id,
                 'title' => $dependency->title,

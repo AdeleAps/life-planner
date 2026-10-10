@@ -27,6 +27,7 @@ class StoreProjectRequest extends FormRequest
             'client_request_id' => ['required', 'uuid'],
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:5000'],
+            'special_instructions' => ['prohibited'],
             'priority' => [Rule::in(['low', 'standard', 'high'])],
             'deadline_on' => ['nullable', 'date_format:Y-m-d'],
             'deadline_is_hard' => [Rule::prohibitedIf(! $this->filled('deadline_on')), 'boolean'],
