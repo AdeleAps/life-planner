@@ -6,9 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\SavePlanningDayInputRequest;
 use App\Http\Resources\PlanningDayInputResource;
 use App\Http\Resources\ScheduledTaskResource;
+use App\Models\PlanningCycle;
 use App\Models\PlanningDayInput;
 use App\Models\ScheduledTask;
 use App\Models\Task;
+use App\Services\DayOffCalendar;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
@@ -18,6 +20,8 @@ use Illuminate\Validation\ValidationException;
 
 class PlanningDayInputController extends Controller
 {
+    public function __construct(private DayOffCalendar $dayOffCalendar) {}
+
     private const DinnerTasks = [
         ['source' => 'dinner_groceries', 'title' => 'Grocery shopping', 'type' => 'day'],
         ['source' => 'dinner_cooking', 'title' => 'Dinner', 'type' => 'evening'],
@@ -48,7 +52,9 @@ class PlanningDayInputController extends Controller
         $values['dinner_dish'] = $values['dinner_enabled'] ? $values['dinner_dish'] : null;
 
         $input = DB::transaction(function () use ($date, $values, $manualTaskIds, $taskReview): PlanningDayInput {
-            $completedFinalTaskIds = $this->reviewPendingTasks($date, $taskReview);
+            [$completedFinalTaskIds, $followups] = $this->reviewPendingTasks($date, $taskReview);
+            $previousManualTaskIds = ScheduledTask::query()->where('plan_date', $date)
+                ->where('source', 'manual')->orderBy('task_id')->pluck('task_id')->all();
 
             if ($manualTaskIds !== null) {
                 $manualTaskIds = array_values(array_diff($manualTaskIds, $completedFinalTaskIds));
@@ -87,6 +93,8 @@ class PlanningDayInputController extends Controller
                 }
             }
 
+            $setupChanged = $input->wasRecentlyCreated || $input->wasChanged();
+
             if ($manualTaskIds !== null) {
                 $manualAssignments = ScheduledTask::query()->where('plan_date', $date)->where('source', 'manual');
 
@@ -94,6 +102,8 @@ class PlanningDayInputController extends Controller
                     $manualAssignments->delete();
                 } else {
                     $manualAssignments->whereNotIn('task_id', $manualTaskIds)->delete();
+                    ScheduledTask::query()->where('plan_date', $date)->where('source', 'planner')
+                        ->whereIn('task_id', $manualTaskIds)->update(['source' => 'manual']);
                 }
 
                 $scheduledTaskIds = ScheduledTask::query()->where('plan_date', $date)->pluck('task_id')->all();
@@ -109,6 +119,21 @@ class PlanningDayInputController extends Controller
             }
 
             $this->syncDinnerTasks($date, $input->dinner_enabled);
+            $this->scheduleReviewFollowups($date, $input, $followups);
+
+            $currentManualTaskIds = ScheduledTask::query()->where('plan_date', $date)
+                ->where('source', 'manual')->orderBy('task_id')->pluck('task_id')->all();
+            $manualTasksChanged = $previousManualTaskIds !== $currentManualTaskIds;
+
+            if ($manualTasksChanged && ! $setupChanged) {
+                $input->revision++;
+                $input->save();
+            }
+
+            if ($setupChanged || $manualTasksChanged || ($taskReview !== null && $taskReview !== [])) {
+                ScheduledTask::query()->where('plan_date', $date)->where('source', 'planner')->delete();
+                PlanningCycle::query()->where('plan_date', $date)->update(['plan_completed_at' => null]);
+            }
 
             return $input;
         });
@@ -117,8 +142,8 @@ class PlanningDayInputController extends Controller
     }
 
     /**
-     * @param  array<int, array{scheduled_task_id: int, done: bool}>|null  $taskReview
-     * @return array<int, int>
+     * @param  array<int, array<string, mixed>>|null  $taskReview
+     * @return array{array<int, int>, array<int, array{task_id: int, action: string, target_date: ?string}>}
      */
     private function reviewPendingTasks(string $setupDate, ?array $taskReview): array
     {
@@ -131,7 +156,7 @@ class PlanningDayInputController extends Controller
                 throw ValidationException::withMessages(['task_review' => 'Review tasks while setting up tomorrow.']);
             }
 
-            return [];
+            return [[], []];
         }
 
         $pending = ScheduledTask::query()
@@ -145,7 +170,7 @@ class PlanningDayInputController extends Controller
             ->get();
 
         if ($pending->isEmpty() && $taskReview === null) {
-            return [];
+            return [[], []];
         }
 
         $choices = collect($taskReview ?? [])->keyBy('scheduled_task_id');
@@ -158,26 +183,39 @@ class PlanningDayInputController extends Controller
 
         $reviewedOccurrences = [];
         $completedFinalTaskIds = [];
+        $followups = [];
 
         foreach ($pending as $assignment) {
-            $done = (bool) $choices->get($assignment->id)['done'];
+            $choice = $choices->get($assignment->id);
+            $done = (bool) $choice['done'];
+            $action = $done ? null : ($choice['action'] ?? 'automatic');
+            $targetDate = match ($action) {
+                'defer' => $today->addDays((int) $choice['delay_days'])->toDateString(),
+                'date' => $choice['target_date'],
+                default => null,
+            };
             $occurrenceKey = $assignment->task_id.'|'.$assignment->plan_date;
 
             if (array_key_exists($occurrenceKey, $reviewedOccurrences)) {
-                if ($reviewedOccurrences[$occurrenceKey] !== $done) {
+                if ($reviewedOccurrences[$occurrenceKey] !== [$done, $action, $targetDate]) {
                     throw ValidationException::withMessages(['task_review' => 'Choose the same result for every copy of a task on one day.']);
                 }
 
                 continue;
             }
 
-            $reviewedOccurrences[$occurrenceKey] = $done;
+            $reviewedOccurrences[$occurrenceKey] = [$done, $action, $targetDate];
 
             if (! $done) {
                 ScheduledTask::query()->where('task_id', $assignment->task_id)
                     ->where('plan_date', $assignment->plan_date)
                     ->where('status', 'planned')
-                    ->update(['status' => 'not_completed']);
+                    ->update(['status' => 'not_completed', 'not_before_on' => $targetDate]);
+                $followups[] = [
+                    'task_id' => $assignment->task_id,
+                    'action' => $action,
+                    'target_date' => $targetDate,
+                ];
 
                 continue;
             }
@@ -226,7 +264,59 @@ class PlanningDayInputController extends Controller
             }
         }
 
-        return $completedFinalTaskIds;
+        return [$completedFinalTaskIds, $followups];
+    }
+
+    /**
+     * @param  array<int, array{task_id: int, action: string, target_date: ?string}>  $followups
+     */
+    private function scheduleReviewFollowups(string $tomorrow, PlanningDayInput $input, array $followups): void
+    {
+        foreach ($followups as $followup) {
+            $task = Task::query()->whereKey($followup['task_id'])->with('dependencies:id,lifecycle_state')->first();
+
+            if ($task === null || $task->lifecycle_state !== 'active') {
+                continue;
+            }
+
+            if ($followup['target_date'] !== null) {
+                ScheduledTask::query()->where('task_id', $task->id)
+                    ->where('plan_date', '>=', $tomorrow)
+                    ->where('plan_date', '<', $followup['target_date'])
+                    ->where('status', 'planned')
+                    ->whereIn('source', ['planner', 'manual', 'carryover'])
+                    ->delete();
+            }
+
+            $date = $followup['action'] === 'date' ? $followup['target_date'] : $tomorrow;
+            $isAutomaticDayCarryover = $followup['action'] === 'automatic' && $task->type === 'day';
+
+            if (! $isAutomaticDayCarryover && $followup['action'] !== 'date') {
+                continue;
+            }
+
+            if ($isAutomaticDayCarryover && ($input->day_off || $this->dayOffCalendar->isGoonModeOn($tomorrow) || ! $task->dependenciesComplete())) {
+                continue;
+            }
+
+            $existing = ScheduledTask::query()->where('task_id', $task->id)->where('plan_date', $date)
+                ->where('status', 'planned')->first();
+
+            if ($existing !== null) {
+                if ($followup['action'] === 'date' && $existing->source === 'planner') {
+                    $existing->update(['source' => 'manual']);
+                }
+
+                continue;
+            }
+
+            ScheduledTask::query()->create([
+                'task_id' => $task->id,
+                'plan_date' => $date,
+                'status' => 'planned',
+                'source' => $isAutomaticDayCarryover ? 'carryover' : 'manual',
+            ]);
+        }
     }
 
     private function syncDinnerTasks(string $date, bool $dinnerEnabled): void

@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-#[Fillable(['task_id', 'plan_date', 'status', 'source'])]
+#[Fillable(['task_id', 'plan_date', 'status', 'source', 'not_before_on'])]
 class ScheduledTask extends Model
 {
     /** @use HasFactory<ScheduledTaskFactory> */

@@ -8,12 +8,21 @@ use App\Models\ScheduledTask;
 use App\Models\Task;
 use App\Models\TaskCompletion;
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 
 class PlanningBriefBuilder
 {
     public function __construct(private DayOffCalendar $dayOffCalendar) {}
+
+    /** @param  array<string, mixed>  $brief */
+    public function fingerprint(array $brief): string
+    {
+        unset($brief['built_at']);
+
+        return hash('sha256', json_encode($brief, JSON_THROW_ON_ERROR));
+    }
 
     /**
      * A read-only snapshot for a planning run, never a published plan.
@@ -51,6 +60,12 @@ class PlanningBriefBuilder
             ->withCount('completions')->withMax('completions', 'completed_at')
             ->withMax(['completions as last_session_completed_at' => fn (Builder $query): Builder => $query->where('completion_type', 'session')], 'completed_at')
             ->orderBy('id')->get();
+
+        $reviewedAssignments = ScheduledTask::query()
+            ->whereIn('task_id', $tasks->pluck('id'))
+            ->whereIn('status', ['completed', 'not_completed'])
+            ->where('plan_date', '<', $targetDate->toDateString())
+            ->orderBy('plan_date')->get()->groupBy('task_id');
 
         $multiSessionTaskIds = $tasks->filter(fn (Task $task): bool => $task->is_multi_session)->pluck('id');
         $recentStart = $targetDate->subDays(14)->toDateString();
@@ -95,11 +110,13 @@ class PlanningBriefBuilder
             'recent_activity_lookback_days' => 14,
             'planning_guidance' => [
                 'Recently started multi-session tasks should be softly prioritized so started work moves toward completion.',
+                'An unfinished Day task is normally carried to the next day automatically. Unfinished Evening tasks should get a quiet priority to return soon, preferably after at least one day, unless a deadline or required recurrence makes tomorrow necessary.',
+                'Normally plan no more than three Day tasks on any date, regardless of workday or weekend. Exceed three only when genuine deadline pressure requires it.',
                 'Avoid scheduling the same task on more than two consecutive days unless genuinely necessary, such as deadline pressure.',
                 'Prefer one Evening task on workdays. On a weekend or holiday, one or two are both normal; do not add a second just to fill capacity. Prefer one on a low-energy day, including a day off. A workday needs a real deadline or unavoidable required recurrence to justify two. Three on a weekend or holiday are only for dire deadline urgency. The explicit Day Off setting still prevents automatic additions.',
                 'Normally avoid two High-energy Evening tasks on the same day; add a second only when genuine deadline pressure requires it.',
                 'Goon mode is a hard pause: plan no tasks on those dates, regardless of deadlines or ordinary Day Off capacity.',
-                'Weekly and monthly focuses are optional user-authored preferences. Consider them when choosing tasks, but do not treat them as hard requirements.',
+                'Weekly and monthly focuses provide context for future optional suggestions. Do not use them to rank existing tasks for tomorrow.',
             ],
             'focuses' => $focuses->map(fn (PlanningFocus $focus): array => [
                 'kind' => $focus->kind,
@@ -118,6 +135,7 @@ class PlanningBriefBuilder
                 'description' => $project->description,
                 'priority' => $project->priority,
                 'deadline_on' => $project->deadline_on?->toDateString(),
+                'days_until_deadline' => $this->daysUntilDeadline($project->deadline_on, $targetDate),
                 'deadline_is_hard' => $project->deadline_is_hard,
                 'remaining_step_count' => $project->remaining_step_count,
                 'blocking_dependencies' => $project->dependencies
@@ -128,7 +146,7 @@ class PlanningBriefBuilder
             'standing_tasks' => $tasks->map(fn (Task $task): array => $this->taskEntry(
                 $task, $targetDate, $today, $targetInput, $assignmentsByTask->get($task->id, collect()),
                 $recentScheduledDays->get($task->id, collect()), $recentSessionCompletions->get($task->id, collect()),
-                $targetHighEnergyEveningCount, $calendarDays->get($targetKey),
+                $targetHighEnergyEveningCount, $calendarDays->get($targetKey), $reviewedAssignments->get($task->id, collect()),
             ))->all(),
             'capacity_days' => collect(range(0, 13))->map(function (int $offset) use ($targetDate, $inputs, $assignmentsByDate, $tasks, $projects, $calendarDays): array {
                 $date = $targetDate->addDays($offset);
@@ -136,6 +154,7 @@ class PlanningBriefBuilder
                 $input = $inputs->get($key);
                 $calendarDay = $calendarDays->get($key);
                 $dayAssignments = $assignmentsByDate->get($key, collect());
+                $dayCount = $dayAssignments->filter(fn (ScheduledTask $assignment): bool => $assignment->task?->type === 'day')->count();
                 $eveningCount = $dayAssignments->filter(fn (ScheduledTask $assignment): bool => $assignment->task?->type === 'evening')->count();
                 $highEnergyEveningCount = $dayAssignments->filter(fn (ScheduledTask $assignment): bool => $assignment->task?->type === 'evening'
                     && $assignment->task->energy_cost === 'high')->count();
@@ -153,7 +172,9 @@ class PlanningBriefBuilder
                     'holiday_names' => $calendarDay['holiday_names'],
                     'personal_days_off' => $calendarDay['personal_days_off'],
                     'setup' => $this->setup($input),
-                    'known_day_task_count' => $dayAssignments->filter(fn (ScheduledTask $assignment): bool => $assignment->task?->type === 'day')->count(),
+                    'known_day_task_count' => $dayCount,
+                    'ordinary_day_task_limit' => 3,
+                    'known_room_to_ordinary_day_limit' => max(0, 3 - $dayCount),
                     'known_evening_task_count' => $eveningCount,
                     'known_high_energy_evening_task_count' => $highEnergyEveningCount,
                     'comfortable_evening_task_counts' => $comfortableEveningCounts,
@@ -203,6 +224,7 @@ class PlanningBriefBuilder
      * @param  Collection<int, ScheduledTask>  $assignments
      * @param  Collection<int, ScheduledTask>  $recentScheduledDays
      * @param  Collection<int, TaskCompletion>  $recentSessionCompletions
+     * @param  Collection<int, ScheduledTask>  $reviewedAssignments
      * @return array<string, mixed>
      */
     private function taskEntry(
@@ -215,6 +237,7 @@ class PlanningBriefBuilder
         Collection $recentSessionCompletions,
         int $targetHighEnergyEveningCount,
         array $calendarDay,
+        Collection $reviewedAssignments,
     ): array {
         $targetKey = $targetDate->toDateString();
         $assignedOnTarget = $assignments->contains(fn (ScheduledTask $assignment): bool => $assignment->plan_date === $targetKey);
@@ -222,6 +245,23 @@ class PlanningBriefBuilder
         $blocks = [];
         $checks = [];
         $softFactors = [];
+        $lastCompletedDate = $reviewedAssignments->where('status', 'completed')->max('plan_date');
+        $unfinishedAssignments = $reviewedAssignments->where('status', 'not_completed')
+            ->filter(fn (ScheduledTask $assignment): bool => $lastCompletedDate === null || $assignment->plan_date > $lastCompletedDate);
+        $lastUnfinishedDate = $unfinishedAssignments->max('plan_date');
+        $notBeforeDate = $unfinishedAssignments->pluck('not_before_on')->filter()->max();
+
+        if ($notBeforeDate !== null && $targetKey < $notBeforeDate && ! $assignedOnTarget) {
+            $blocks[] = 'deferred_until';
+        }
+
+        if ($lastUnfinishedDate !== null && ! $assignedOnTarget) {
+            $softFactors[] = 'unfinished_task_priority';
+
+            if ($task->type === 'evening' && $lastUnfinishedDate === $targetDate->subDay()->toDateString()) {
+                $softFactors[] = 'prefer_gap_after_unfinished_evening';
+            }
+        }
 
         if ($blockingDependencies->isNotEmpty()) {
             $blocks[] = 'dependencies_incomplete';
@@ -315,12 +355,14 @@ class PlanningBriefBuilder
             'day_preference' => $task->day_preference,
             'day_preference_is_hard' => $task->day_preference_is_hard,
             'deadline_on' => $task->deadline_on?->toDateString(),
+            'days_until_deadline' => $this->daysUntilDeadline($task->deadline_on, $targetDate),
             'deadline_is_hard' => $task->deadline_is_hard,
             'project' => $task->project === null ? null : [
                 'id' => $task->project->id,
                 'title' => $task->project->title,
                 'priority' => $task->project->priority,
                 'deadline_on' => $task->project->deadline_on?->toDateString(),
+                'days_until_deadline' => $this->daysUntilDeadline($task->project->deadline_on, $targetDate),
                 'deadline_is_hard' => $task->project->deadline_is_hard,
                 'lifecycle_state' => $task->project->lifecycle_state,
             ],
@@ -335,6 +377,8 @@ class PlanningBriefBuilder
             'recent_session_completion_dates' => $recentSessionDates->all(),
             'recent_scheduled_dates' => $recentScheduledDates->all(),
             'future_assignment_dates' => $assignments->pluck('plan_date')->all(),
+            'last_unfinished_on' => $lastUnfinishedDate,
+            'not_before_on' => $notBeforeDate,
             'target_assessment' => [
                 'state' => $state,
                 'blocking_reasons' => $blocks,
@@ -343,5 +387,16 @@ class PlanningBriefBuilder
                 'soft_factors' => $softFactors,
             ],
         ];
+    }
+
+    private function daysUntilDeadline(?CarbonInterface $deadline, CarbonImmutable $targetDate): ?int
+    {
+        if ($deadline === null) {
+            return null;
+        }
+
+        $deadlineDate = CarbonImmutable::parse($deadline->toDateString(), 'Europe/Riga');
+
+        return (int) $targetDate->diffInDays($deadlineDate, false);
     }
 }

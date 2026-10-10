@@ -455,6 +455,83 @@ textarea:focus-visible {
   min-height: 0;
 }
 
+.tomorrow-plan-stage {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tomorrow-plan-body {
+  min-height: 160px;
+}
+
+.tomorrow-planning-animation {
+  display: grid;
+  justify-items: center;
+  padding: 8px 0 14px;
+  text-align: center;
+}
+
+.tomorrow-planning-animation p {
+  margin: 0;
+  color: var(--green-deep);
+  font-size: 16px;
+  font-weight: 750;
+}
+
+.tomorrow-plan-edit {
+  display: block;
+  margin: 18px auto 0;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--green-deep);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.tomorrow-plan-interrupted p {
+  margin: 18px 0 0;
+  color: var(--error);
+  line-height: 1.5;
+}
+
+.tomorrow-plan-ready {
+  padding: 13px 0 4px;
+  text-align: center;
+}
+
+.tomorrow-plan-ready > img {
+  width: 57px;
+  height: 57px;
+}
+
+.tomorrow-plan-ready > p {
+  margin: 9px 0 0;
+  color: var(--green-deep);
+  line-height: 1.5;
+}
+
+.tomorrow-plan-ready ul {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tomorrow-plan-ready li {
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--green-soft);
+  color: var(--green-deep);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .tomorrow-setup-body {
   display: grid;
   gap: 18px;
@@ -476,9 +553,9 @@ textarea:focus-visible {
 }
 
 .tomorrow-review-list li {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   min-width: 0;
   padding: 10px;
@@ -529,6 +606,67 @@ textarea:focus-visible {
 .tomorrow-review-choice button.selected {
   background: var(--sun);
   color: var(--ink);
+}
+
+.tomorrow-review-followup {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.tomorrow-review-followup > span {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.tomorrow-review-followup > .planner-select {
+  grid-column: 1 / -1;
+}
+
+.tomorrow-review-delay,
+.tomorrow-review-date {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tomorrow-review-delay input {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 11px;
+  border: 1.5px solid var(--line);
+  border-radius: 11px;
+  color: var(--ink);
+  font: inherit;
+}
+
+.tomorrow-review-delay input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.tomorrow-review-followup .form-error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.tomorrow-review-delete {
+  grid-column: 2;
+  justify-self: end;
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: var(--error);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .tomorrow-focus-prompts {
@@ -774,6 +912,113 @@ textarea:focus-visible {
   background: var(--surface);
   box-shadow: var(--shadow);
   animation: rise-in 500ms ease-out both;
+}
+
+.planning-draft-note,
+.tomorrow-plan-note {
+  margin: 10px 0 0;
+  color: var(--green-deep);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.capacity-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border: 1px solid #edcf72;
+  border-radius: 14px;
+  background: #fff4cf;
+  color: #59451a;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.capacity-warning::before {
+  content: '!';
+  display: grid;
+  flex: 0 0 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 50%;
+  background: #ffd34a;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.planning-draft-tasks {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.planning-draft-tasks label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 59px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.planning-draft-tasks label.needs-check {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.planning-draft-tasks input {
+  appearance: none;
+  display: grid;
+  flex: 0 0 21px;
+  width: 21px;
+  height: 21px;
+  margin: 0;
+  place-items: center;
+  border: 2px solid #a9c7ba;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.planning-draft-tasks input:checked {
+  border-color: var(--sun);
+  background: var(--sun);
+}
+
+.planning-draft-tasks input:checked::after {
+  content: '✓';
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.planning-draft-task-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.planning-draft-task-copy strong {
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.planning-draft-task-copy small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.planning-draft-empty {
+  margin: 17px 0 0;
+  color: var(--muted);
+  font-size: 14px;
 }
 
 .tomorrow-planned-heading h2 {
@@ -1619,6 +1864,14 @@ textarea:focus-visible {
     bottom: 24px;
     border-radius: 26px;
   }
+}
+
+.tomorrow-setup-sheet[open] {
+  inset: 50% auto auto 50%;
+  width: min(calc(100% - 28px), 560px);
+  margin: 0;
+  transform: translate(-50%, -50%);
+  border-radius: 26px;
 }
 
 .field {

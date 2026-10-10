@@ -41,4 +41,8 @@ return [
         'subject' => env('WEB_PUSH_SUBJECT'),
     ],
 
+    'openai' => [
+        'key' => env('OPENAI_API_KEY'),
+    ],
+
 ];

@@ -7,6 +7,7 @@ use App\Models\ScheduledTask;
 use App\Models\Task;
 use App\Models\TaskCompletion;
 use App\Services\PlanningBriefBuilder;
+use App\Services\PlanningCapacityPolicy;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -42,6 +43,11 @@ class PlanningBriefTest extends TestCase
                 'recurrence_rule' => ['unit' => 'week', 'interval' => 1, 'weekdays' => [0]],
             ]);
             $notice = Task::factory()->create(['title' => 'Hike', 'advance_notice_days' => 7]);
+            $distantDeadline = Task::factory()->create([
+                'title' => 'Buy a car',
+                'deadline_on' => '2026-11-21',
+                'deadline_is_hard' => true,
+            ]);
             Task::factory()->create(['title' => 'Finished', 'lifecycle_state' => 'completed']);
 
             PlanningDayInput::query()->create([
@@ -61,11 +67,14 @@ class PlanningBriefTest extends TestCase
             $this->assertCount(14, $brief['capacity_days']);
             $this->assertSame('known_task_counts_only', $brief['snapshot_limits']['capacity']);
             $this->assertSame(1, $brief['pending_review_count']);
-            $this->assertSame(5, $tasks->count());
+            $this->assertSame(6, $tasks->count());
             $this->assertSame('blocked', $tasks[$blocked->id]['target_assessment']['state']);
             $this->assertContains('dependencies_incomplete', $tasks[$blocked->id]['target_assessment']['blocking_reasons']);
             $this->assertContains('high_energy_task_on_low_energy_day', $tasks[$blocked->id]['target_assessment']['soft_factors']);
             $this->assertSame($project->id, $tasks[$blocked->id]['project']['id']);
+            $this->assertSame(4, $tasks[$blocked->id]['project']['days_until_deadline']);
+            $this->assertSame(41, $tasks[$distantDeadline->id]['days_until_deadline']);
+            $this->assertNull($tasks[$notice->id]['days_until_deadline']);
             $this->assertSame('already_assigned', $tasks[$manual->id]['target_assessment']['state']);
             $this->assertSame('needs_checks', $tasks[$recurring->id]['target_assessment']['state']);
             $this->assertContains('advance_notice_window_not_met', $tasks[$notice->id]['target_assessment']['blocking_reasons']);
@@ -75,6 +84,7 @@ class PlanningBriefTest extends TestCase
             $this->assertSame([1], $brief['capacity_days'][0]['comfortable_evening_task_counts']);
             $this->assertSame('Prepare the garden', $brief['capacity_days'][4]['deadlines_on_date'][0]['title']);
             $this->assertSame(1, $brief['projects'][0]['remaining_step_count']);
+            $this->assertSame(4, $brief['projects'][0]['days_until_deadline']);
 
             $this->assertDatabaseCount('scheduled_tasks', 2);
             $this->assertDatabaseCount('planning_day_inputs', 1);
@@ -124,7 +134,7 @@ class PlanningBriefTest extends TestCase
         $this->assertNotNull($entry['last_session_completed_at']);
         $this->assertContains('recent_multi_session_progress', $entry['target_assessment']['soft_factors']);
         $this->assertContains('would_be_third_consecutive_scheduled_day', $entry['target_assessment']['soft_factors']);
-        $this->assertCount(6, $brief['planning_guidance']);
+        $this->assertCount(8, $brief['planning_guidance']);
     }
 
     public function test_weekend_emergency_capacity_and_stacked_high_energy_are_visible_without_overriding_day_off(): void
@@ -140,6 +150,8 @@ class PlanningBriefTest extends TestCase
 
         $this->assertSame(1, $sunday['known_high_energy_evening_task_count']);
         $this->assertSame(2, $sunday['ordinary_evening_task_limit']);
+        $this->assertSame(3, $sunday['ordinary_day_task_limit']);
+        $this->assertSame(3, $monday['ordinary_day_task_limit']);
         $this->assertSame([1, 2], $sunday['comfortable_evening_task_counts']);
         $this->assertSame(3, $sunday['absolute_evening_task_limit']);
         $this->assertSame(0, $sunday['known_room_to_preferred_high_energy_limit']);
@@ -148,5 +160,50 @@ class PlanningBriefTest extends TestCase
         $this->assertSame('confirmed_calendar', $sunday['limit_day_type_basis']);
         $this->assertContains('would_stack_high_energy_evening_tasks', $tasks[$candidate->id]['target_assessment']['soft_factors']);
         $this->assertSame('preliminary_candidate', $tasks[$candidate->id]['target_assessment']['state']);
+    }
+
+    public function test_fourth_day_task_requires_an_imminent_deadline(): void
+    {
+        $tasks = Task::factory()->count(4)->create(['type' => 'day', 'energy_cost' => null]);
+        $policy = app(PlanningCapacityPolicy::class);
+        $target = CarbonImmutable::parse('2026-10-11', 'Europe/Riga');
+        $brief = app(PlanningBriefBuilder::class)->build($target);
+
+        $this->assertContains('More than three Day tasks need deadlines due very soon.', $policy->assess($brief, $tasks->pluck('id')->all())['errors']);
+
+        $tasks->first()->update(['deadline_on' => '2026-10-11', 'deadline_is_hard' => true]);
+        $brief = app(PlanningBriefBuilder::class)->build($target);
+
+        $this->assertSame([], $policy->assess($brief, $tasks->pluck('id')->all())['errors']);
+    }
+
+    public function test_absolute_evening_limit_still_applies_when_four_deadlines_are_imminent(): void
+    {
+        $tasks = Task::factory()->count(4)->create(['deadline_on' => '2026-10-11', 'deadline_is_hard' => true]);
+        $brief = app(PlanningBriefBuilder::class)->build(CarbonImmutable::parse('2026-10-11', 'Europe/Riga'));
+
+        $this->assertContains('Too many Evening tasks for tomorrow.', app(PlanningCapacityPolicy::class)
+            ->assess($brief, $tasks->pluck('id')->all())['errors']);
+    }
+
+    public function test_two_high_energy_evening_tasks_on_a_low_energy_day_need_imminent_deadlines(): void
+    {
+        PlanningDayInput::query()->create([
+            'plan_date' => '2026-10-11',
+            'energy_level' => 'low',
+            'day_off' => false,
+            'dinner_enabled' => false,
+        ]);
+        $tasks = Task::factory()->count(2)->create(['energy_cost' => 'high']);
+        $target = CarbonImmutable::parse('2026-10-11', 'Europe/Riga');
+        $policy = app(PlanningCapacityPolicy::class);
+        $brief = app(PlanningBriefBuilder::class)->build($target);
+
+        $this->assertContains('Two high-energy Evening tasks need deadlines due very soon.', $policy->assess($brief, $tasks->pluck('id')->all())['errors']);
+
+        $tasks->each(fn (Task $task) => $task->update(['deadline_on' => '2026-10-11', 'deadline_is_hard' => true]));
+        $brief = app(PlanningBriefBuilder::class)->build($target);
+
+        $this->assertSame([], $policy->assess($brief, $tasks->pluck('id')->all())['errors']);
     }
 }

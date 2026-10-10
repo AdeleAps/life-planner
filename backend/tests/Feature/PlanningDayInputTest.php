@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\ScheduledTask;
 use App\Models\Task;
+use App\Services\PlanningBriefBuilder;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
@@ -100,6 +101,105 @@ class PlanningDayInputTest extends TestCase
         $this->assertDatabaseHas('scheduled_tasks', ['id' => $assignment->id, 'status' => 'completed']);
         $this->assertDatabaseHas('task_completions', ['task_id' => $task->id, 'completion_type' => 'occurrence']);
         $this->assertDatabaseHas('tasks', ['id' => $task->id, 'lifecycle_state' => 'active']);
+    }
+
+    public function test_unfinished_day_task_carries_to_tomorrow_by_default(): void
+    {
+        $today = CarbonImmutable::now('Europe/Riga')->toDateString();
+        $tomorrow = CarbonImmutable::now('Europe/Riga')->addDay()->toDateString();
+        $task = Task::factory()->create(['title' => 'Water the plants', 'type' => 'day', 'priority' => null, 'energy_cost' => null]);
+        $assignment = ScheduledTask::factory()->create(['task_id' => $task->id, 'plan_date' => $today]);
+
+        $this->putJson("/api/v1/planning-days/{$tomorrow}/setup", [
+            'energy_level' => 'standard',
+            'day_off' => false,
+            'dinner_enabled' => false,
+            'task_review' => [['scheduled_task_id' => $assignment->id, 'done' => false, 'action' => 'automatic']],
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('scheduled_tasks', ['id' => $assignment->id, 'status' => 'not_completed']);
+        $this->assertDatabaseHas('scheduled_tasks', [
+            'task_id' => $task->id,
+            'plan_date' => $tomorrow,
+            'status' => 'planned',
+            'source' => 'carryover',
+        ]);
+        $this->assertDatabaseHas('tasks', ['id' => $task->id, 'lifecycle_state' => 'active']);
+    }
+
+    public function test_unfinished_evening_task_stays_active_with_a_retry_priority_but_no_immediate_assignment(): void
+    {
+        $today = CarbonImmutable::now('Europe/Riga');
+        $tomorrow = $today->addDay()->toDateString();
+        $task = Task::factory()->create(['title' => 'Clean the kitchen']);
+        $assignment = ScheduledTask::factory()->create(['task_id' => $task->id, 'plan_date' => $today->toDateString()]);
+
+        $this->putJson("/api/v1/planning-days/{$tomorrow}/setup", [
+            'energy_level' => 'standard',
+            'day_off' => false,
+            'dinner_enabled' => false,
+            'task_review' => [['scheduled_task_id' => $assignment->id, 'done' => false]],
+        ])->assertCreated();
+
+        $this->assertDatabaseMissing('scheduled_tasks', ['task_id' => $task->id, 'plan_date' => $tomorrow]);
+        $brief = app(PlanningBriefBuilder::class)->build($today->addDay());
+        $entry = collect($brief['standing_tasks'])->firstWhere('id', $task->id);
+        $this->assertSame($today->toDateString(), $entry['last_unfinished_on']);
+        $this->assertContains('unfinished_task_priority', $entry['target_assessment']['soft_factors']);
+        $this->assertContains('prefer_gap_after_unfinished_evening', $entry['target_assessment']['soft_factors']);
+    }
+
+    public function test_deferred_unfinished_task_is_blocked_until_the_chosen_window_ends(): void
+    {
+        $today = CarbonImmutable::now('Europe/Riga');
+        $tomorrow = $today->addDay()->toDateString();
+        $allowedDate = $today->addDays(3)->toDateString();
+        $task = Task::factory()->create(['title' => 'Read a chapter']);
+        $assignment = ScheduledTask::factory()->create(['task_id' => $task->id, 'plan_date' => $today->toDateString()]);
+
+        $this->putJson("/api/v1/planning-days/{$tomorrow}/setup", [
+            'energy_level' => 'standard',
+            'day_off' => false,
+            'dinner_enabled' => false,
+            'task_review' => [['scheduled_task_id' => $assignment->id, 'done' => false, 'action' => 'defer', 'delay_days' => 3]],
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('scheduled_tasks', ['id' => $assignment->id, 'not_before_on' => $allowedDate]);
+        $tomorrowBrief = app(PlanningBriefBuilder::class)->build($today->addDay());
+        $entry = collect($tomorrowBrief['standing_tasks'])->firstWhere('id', $task->id);
+        $this->assertContains('deferred_until', $entry['target_assessment']['blocking_reasons']);
+
+        $laterBrief = app(PlanningBriefBuilder::class)->build($today->addDays(3));
+        $laterEntry = collect($laterBrief['standing_tasks'])->firstWhere('id', $task->id);
+        $this->assertNotContains('deferred_until', $laterEntry['target_assessment']['blocking_reasons']);
+        $this->assertContains('unfinished_task_priority', $laterEntry['target_assessment']['soft_factors']);
+    }
+
+    public function test_specific_day_choice_creates_a_firm_future_assignment(): void
+    {
+        $today = CarbonImmutable::now('Europe/Riga');
+        $tomorrow = $today->addDay()->toDateString();
+        $chosenDate = $today->addDays(5)->toDateString();
+        $task = Task::factory()->create(['title' => 'Call a friend']);
+        $assignment = ScheduledTask::factory()->create(['task_id' => $task->id, 'plan_date' => $today->toDateString()]);
+        ScheduledTask::factory()->create(['task_id' => $task->id, 'plan_date' => $tomorrow, 'source' => 'manual']);
+
+        $this->putJson("/api/v1/planning-days/{$tomorrow}/setup", [
+            'energy_level' => 'standard',
+            'day_off' => false,
+            'dinner_enabled' => false,
+            'task_review' => [['scheduled_task_id' => $assignment->id, 'done' => false, 'action' => 'date', 'target_date' => $chosenDate]],
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('scheduled_tasks', ['id' => $assignment->id, 'not_before_on' => $chosenDate]);
+        $this->assertDatabaseHas('scheduled_tasks', [
+            'task_id' => $task->id,
+            'plan_date' => $chosenDate,
+            'status' => 'planned',
+            'source' => 'manual',
+        ]);
+        $this->assertDatabaseMissing('scheduled_tasks', ['task_id' => $task->id, 'plan_date' => $tomorrow]);
+        $this->assertDatabaseCount('scheduled_tasks', 2);
     }
 
     public function test_tomorrow_setup_defaults_save_and_reload_by_date(): void

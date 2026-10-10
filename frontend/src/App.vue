@@ -4,6 +4,7 @@ import PlannerDatePicker from './PlannerDatePicker.vue'
 import PlannerCalendar from './PlannerCalendar.vue'
 import PlanningFocusPanel from './PlanningFocusPanel.vue'
 import PlannerSelect from './PlannerSelect.vue'
+import PlanningDaisy from './PlanningDaisy.vue'
 import { existingReminderSubscription, getReminderConfiguration, registerPlannerWorker, saveSubscription, subscribeToReminders, supportsReminders, unsubscribeFromReminders } from './push.js'
 
 const activeView = ref('tomorrow')
@@ -64,6 +65,25 @@ const tomorrowSetupDialog = ref(null)
 const tomorrowSetupDishInput = ref(null)
 const tomorrowSetupLoading = ref(false)
 const tomorrowSetupSaving = ref(false)
+const tomorrowSetupStep = ref('setup')
+const planningPhrases = [
+  'Canoodling with the calendar…',
+  'Daisy doodling…',
+  'Tucking tomorrow in…',
+  'Doing a little shuffle…',
+  'Puttering toward a plan…',
+  'Scooting things into place…',
+  'Finding the sweet spot…',
+  'Fluffing up tomorrow…',
+  'Making room for nice things…',
+  'Letting tomorrow bloom…',
+]
+const planningPhrase = ref('')
+watch(tomorrowSetupStep, (step, previousStep) => {
+  if (step !== 'planning' || previousStep === 'planning') return
+  const nextPhrases = planningPhrases.filter((phrase) => phrase !== planningPhrase.value)
+  planningPhrase.value = nextPhrases[Math.floor(Math.random() * nextPhrases.length)]
+}, { flush: 'sync' })
 const tomorrowSetupLoadError = ref('')
 const tomorrowSetupError = ref('')
 const focusPrompts = ref([])
@@ -74,7 +94,32 @@ const pendingReviewTasks = ref([])
 const pendingReviewLoading = ref(false)
 const pendingReviewError = ref('')
 const reviewDoneById = ref({})
-const tomorrowReady = computed(() => tomorrowSetupSaved.value && !tomorrowSetupLoading.value && !tomorrowSetupLoadError.value
+const reviewActionById = ref({})
+const reviewDelayById = ref({})
+const reviewDateById = ref({})
+const reviewFieldErrors = ref({})
+const tomorrowPlan = ref({ draft: null, published: false, note: '', deadline_pressure_warnings: [] })
+const tomorrowPlanLoading = ref(false)
+const tomorrowPlanError = ref('')
+const tomorrowDraftLoading = ref(false)
+const tomorrowPlanSaving = ref(false)
+const draftSelectedTaskIds = ref([])
+const draftAttemptRequestId = ref(null)
+const draftCapacityWarnings = computed(() => {
+  const draft = tomorrowPlan.value.draft
+  if (!draft) return []
+  if (tomorrowPlan.value.published) return draft.capacity_warnings || []
+
+  const originalIds = draft.task_ids.filter((id) => !draft.needs_checks_task_ids.includes(id)).sort((a, b) => a - b)
+  const selectedIds = [...draftSelectedTaskIds.value].sort((a, b) => a - b)
+  return originalIds.length === selectedIds.length && originalIds.every((id, index) => id === selectedIds[index])
+    ? draft.capacity_warnings || [] : []
+})
+const tomorrowCapacityWarnings = computed(() => [
+  ...(tomorrowPlan.value.deadline_pressure_warnings || []),
+  ...draftCapacityWarnings.value,
+])
+const tomorrowReady = computed(() => tomorrowPlan.value.published && !tomorrowSetupLoading.value && !tomorrowSetupLoadError.value
   && !pendingReviewLoading.value && !pendingReviewError.value && pendingReviewTasks.value.length === 0)
 const tomorrowDishError = ref('')
 const tomorrowTaskError = ref('')
@@ -505,9 +550,17 @@ function reviewDateLabel(date) {
     .format(new Date(`${date}T12:00:00`))
 }
 
+function reviewActionOptions(item) {
+  return [
+    { value: 'automatic', label: item.task.type === 'day' && !tomorrowSetup.day_off ? 'Tomorrow' : 'Let Planner choose' },
+    { value: 'defer', label: 'Wait a while' },
+    { value: 'date', label: 'Choose a day' },
+  ]
+}
+
 let latestPendingReviewLoad = 0
 
-async function loadPendingReviewTasks() {
+async function loadPendingReviewTasks(preserveChoices = false) {
   const loadId = ++latestPendingReviewLoad
   pendingReviewLoading.value = true
   pendingReviewError.value = ''
@@ -520,8 +573,16 @@ async function loadPendingReviewTasks() {
     if (!response.ok) throw new Error('Could not load task review')
     const result = await response.json()
     if (loadId !== latestPendingReviewLoad) return
+    const previousDone = reviewDoneById.value
+    const previousAction = reviewActionById.value
+    const previousDelay = reviewDelayById.value
+    const previousDate = reviewDateById.value
     pendingReviewTasks.value = result.data
-    reviewDoneById.value = Object.fromEntries(result.data.map((item) => [item.id, true]))
+    reviewDoneById.value = Object.fromEntries(result.data.map((item) => [item.id, preserveChoices === true ? previousDone[item.id] ?? true : true]))
+    reviewActionById.value = Object.fromEntries(result.data.map((item) => [item.id, preserveChoices === true ? previousAction[item.id] ?? 'automatic' : 'automatic']))
+    reviewDelayById.value = Object.fromEntries(result.data.map((item) => [item.id, preserveChoices === true ? previousDelay[item.id] ?? 1 : 1]))
+    reviewDateById.value = Object.fromEntries(result.data.map((item) => [item.id, preserveChoices === true ? previousDate[item.id] ?? '' : '']))
+    reviewFieldErrors.value = {}
   } catch {
     if (loadId === latestPendingReviewLoad) pendingReviewError.value = "Couldn't load tasks to review. Try again."
   } finally {
@@ -558,6 +619,7 @@ async function loadTomorrowSetup() {
     }
     tomorrowSetupSaved.value = data.saved
     Object.assign(tomorrowSetup, savedTomorrowSetup.value)
+    await loadTomorrowPlan()
   } catch {
     if (loadId === latestTomorrowSetupLoad) tomorrowSetupLoadError.value = "Couldn't load tomorrow's setup. Try again."
   } finally {
@@ -565,7 +627,130 @@ async function loadTomorrowSetup() {
   }
 }
 
+async function loadTomorrowPlan() {
+  const planDate = tomorrowDate.value
+  tomorrowPlanLoading.value = true
+  tomorrowPlanError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/planning-days/${planDate}/plan`, {
+      headers: { Accept: 'application/json' }, cache: 'no-store',
+    })
+    if (!response.ok) throw new Error('Could not load the plan')
+    const result = await response.json()
+    if (planDate !== tomorrowDate.value) return
+    tomorrowPlan.value = result.data
+    if (result.data.draft) draftAttemptRequestId.value = null
+    const draft = result.data.draft
+    draftSelectedTaskIds.value = draft
+      ? (draft.published_task_ids || draft.task_ids).filter((id) => !draft.needs_checks_task_ids.includes(id))
+      : []
+  } catch {
+    tomorrowPlanError.value = "Couldn't load tomorrow's plan. Try again."
+  } finally {
+    tomorrowPlanLoading.value = false
+  }
+}
+
+async function generateTomorrowDraft() {
+  if (tomorrowDraftLoading.value || tomorrowPlanSaving.value) return
+  tomorrowDraftLoading.value = true
+  tomorrowSetupStep.value = 'planning'
+  tomorrowPlanError.value = ''
+  draftAttemptRequestId.value ||= crypto.randomUUID()
+
+  try {
+    const response = await fetch(`/api/v1/planning-days/${tomorrowDate.value}/draft`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_request_id: draftAttemptRequestId.value }),
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      if (response.status !== 409) draftAttemptRequestId.value = null
+      if (response.status === 429) throw new Error(result.message || 'Planner’s €15 monthly AI cutoff has been reached.')
+      if (response.status === 503) throw new Error('AI planning is not configured yet.')
+      if (response.status === 422 && result.errors?.date?.[0]) throw new Error(result.errors.date[0])
+      if (response.status === 502 && result.message) throw new Error(result.message)
+      throw new Error("Couldn't make a plan. Your existing tasks are safe; try again.")
+    }
+    tomorrowPlan.value = { draft: result.data, published: false, note: '', deadline_pressure_warnings: tomorrowPlan.value.deadline_pressure_warnings || [] }
+    draftAttemptRequestId.value = null
+    draftSelectedTaskIds.value = result.data.task_ids.filter((id) => !result.data.needs_checks_task_ids.includes(id))
+  } catch (error) {
+    tomorrowPlanError.value = error.message
+  } finally {
+    tomorrowDraftLoading.value = false
+    tomorrowSetupStep.value = tomorrowPlanError.value ? 'error' : 'draft'
+  }
+}
+
+async function saveTomorrowPlan() {
+  const draft = tomorrowPlan.value.draft
+  if (!draft || tomorrowPlanSaving.value) return
+  tomorrowPlanSaving.value = true
+  tomorrowSetupStep.value = 'planning'
+  tomorrowPlanError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/planning-days/${tomorrowDate.value}/plan`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_request_id: draft.client_request_id, task_ids: draftSelectedTaskIds.value }),
+    })
+    const result = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(result.errors?.task_ids?.[0] || result.errors?.client_request_id?.[0] || 'Tomorrow changed. Get a fresh draft.')
+    tomorrowPlan.value = result.data
+    await loadTomorrowSetup()
+    closeTomorrowSetup()
+  } catch (error) {
+    tomorrowPlanError.value = error.message
+    tomorrowSetupStep.value = 'draft'
+  } finally {
+    tomorrowPlanSaving.value = false
+  }
+}
+
+async function finishDayOffPlan() {
+  tomorrowPlanSaving.value = true
+  tomorrowSetupStep.value = 'planning'
+  tomorrowPlanError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/planning-days/${tomorrowDate.value}/plan`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_ids: [] }),
+    })
+    if (!response.ok) throw new Error("Couldn't finish tomorrow's setup. Try again.")
+    await loadTomorrowSetup()
+    tomorrowSetupStep.value = 'done'
+  } catch (error) {
+    tomorrowPlanError.value = error.message
+    tomorrowSetupStep.value = 'error'
+  } finally {
+    tomorrowPlanSaving.value = false
+  }
+}
+
+async function retryTomorrowPlanning() {
+  tomorrowSetupStep.value = 'planning'
+  await loadTomorrowPlan()
+  if (tomorrowPlanError.value) {
+    tomorrowSetupStep.value = 'error'
+  } else if (tomorrowPlan.value.published) {
+    tomorrowSetupStep.value = 'done'
+  } else if (tomorrowPlan.value.draft) {
+    tomorrowSetupStep.value = 'draft'
+  } else if (savedTomorrowSetup.value.day_off) {
+    await finishDayOffPlan()
+  } else {
+    await generateTomorrowDraft()
+  }
+}
+
 function openTomorrowSetup() {
+  tomorrowSetupStep.value = tomorrowPlan.value.draft && !tomorrowPlan.value.published && !pendingReviewTasks.value.length ? 'draft' : 'setup'
   if (!tomorrowSetupDialog.value?.open) tomorrowSetupDialog.value?.showModal()
   tomorrowTaskPickerOpen.value = false
   tomorrowTaskSearch.value = ''
@@ -598,6 +783,7 @@ function closeTomorrowSetup() {
 }
 
 function onTomorrowSetupClose() {
+  tomorrowSetupStep.value = 'setup'
   Object.assign(tomorrowSetup, savedTomorrowSetup.value)
   tomorrowManualTaskIds.value = [...savedTomorrowManualTaskIds.value]
   tomorrowTaskPickerOpen.value = false
@@ -605,6 +791,7 @@ function onTomorrowSetupClose() {
   tomorrowTaskError.value = ''
   tomorrowDishError.value = ''
   tomorrowSetupError.value = ''
+  reviewFieldErrors.value = {}
   if (!captureForTomorrow.value) focusPrompts.value = []
   focusPromptError.value = ''
 }
@@ -671,6 +858,19 @@ async function saveTomorrowSetup() {
   tomorrowDishError.value = ''
   tomorrowTaskError.value = ''
   tomorrowSetupError.value = ''
+  reviewFieldErrors.value = {}
+
+  for (const item of pendingReviewTasks.value) {
+    if (reviewDoneById.value[item.id]) continue
+    if (reviewActionById.value[item.id] === 'defer' && (!Number.isInteger(reviewDelayById.value[item.id]) || reviewDelayById.value[item.id] < 1 || reviewDelayById.value[item.id] > 365)) {
+      reviewFieldErrors.value[item.id] = 'Choose 1–365 days.'
+    }
+    if (reviewActionById.value[item.id] === 'date' && (!/^\d{4}-\d{2}-\d{2}$/.test(reviewDateById.value[item.id]) || reviewDateById.value[item.id] < tomorrowDate.value)) {
+      reviewFieldErrors.value[item.id] = 'Choose tomorrow or a later day.'
+    }
+  }
+
+  if (Object.keys(reviewFieldErrors.value).length) return
 
   if (tomorrowSetup.dinner_enabled && !tomorrowSetup.dinner_dish.trim()) {
     tomorrowDishError.value = 'Add the dish for dinner.'
@@ -680,6 +880,8 @@ async function saveTomorrowSetup() {
   }
 
   tomorrowSetupSaving.value = true
+  tomorrowSetupStep.value = 'planning'
+  let setupWasSaved = false
 
   try {
     for (const prompt of focusPrompts.value) {
@@ -690,6 +892,7 @@ async function saveTomorrowSetup() {
       })
       if (!response.ok) {
         focusPromptError.value = 'Could not save your focus. Try again.'
+        tomorrowSetupStep.value = 'setup'
         return
       }
     }
@@ -708,6 +911,11 @@ async function saveTomorrowSetup() {
         task_review: pendingReviewTasks.value.map((item) => ({
           scheduled_task_id: item.id,
           done: reviewDoneById.value[item.id],
+          ...(!reviewDoneById.value[item.id] ? {
+            action: reviewActionById.value[item.id],
+            ...(reviewActionById.value[item.id] === 'defer' ? { delay_days: reviewDelayById.value[item.id] } : {}),
+            ...(reviewActionById.value[item.id] === 'date' ? { target_date: reviewDateById.value[item.id] } : {}),
+          } : {}),
         })),
       }),
     })
@@ -716,21 +924,25 @@ async function saveTomorrowSetup() {
     if (!response.ok) {
       if (result.errors?.dinner_dish) {
         tomorrowDishError.value = 'Add the dish for dinner.'
+        tomorrowSetupStep.value = 'setup'
         await nextTick()
         tomorrowSetupDishInput.value?.focus()
         return
       }
       if (result.errors?.manual_task_ids || Object.keys(result.errors || {}).some((key) => key.startsWith('manual_task_ids.'))) {
         tomorrowTaskError.value = result.errors.manual_task_ids?.[0] || 'Check the tasks added for tomorrow.'
+        tomorrowSetupStep.value = 'setup'
         return
       }
       if (result.errors?.task_review || Object.keys(result.errors || {}).some((key) => key.startsWith('task_review.'))) {
-        await loadPendingReviewTasks()
-        tomorrowSetupError.value = 'Tasks changed. Check the review and save again.'
+        if (result.errors?.task_review) await loadPendingReviewTasks()
+        tomorrowSetupError.value = result.errors?.task_review?.[0] || 'Check the unfinished task choices.'
+        tomorrowSetupStep.value = 'setup'
         return
       }
       throw new Error("Couldn't save tomorrow's setup. Try again.")
     }
+    setupWasSaved = true
 
     savedTomorrowSetup.value = {
       energy_level: result.data.energy_level,
@@ -742,11 +954,26 @@ async function saveTomorrowSetup() {
     savedTomorrowManualTaskIds.value = tomorrowScheduledTasks.value.filter((item) => item.source === 'manual').map((item) => item.task.id)
     tomorrowManualTaskIds.value = [...savedTomorrowManualTaskIds.value]
     tomorrowSetupSaved.value = true
+    draftAttemptRequestId.value = null
     Object.assign(tomorrowSetup, savedTomorrowSetup.value)
     await Promise.all([loadPendingReviewTasks(), loadTodayTasks(), loadTasks(), loadProjects()])
-    closeTomorrowSetup()
+    await loadTomorrowPlan()
+    if (!tomorrowPlanError.value && !tomorrowPlan.value.published && !tomorrowPlan.value.draft) {
+      if (savedTomorrowSetup.value.day_off) await finishDayOffPlan()
+      else await generateTomorrowDraft()
+    } else if (tomorrowPlanError.value) {
+      tomorrowSetupStep.value = 'error'
+    } else {
+      tomorrowSetupStep.value = tomorrowPlan.value.published ? 'done' : 'draft'
+    }
   } catch {
-    tomorrowSetupError.value = "Couldn't save tomorrow's setup. Try again."
+    if (setupWasSaved) {
+      tomorrowPlanError.value = "Couldn't load tomorrow's plan. Try again."
+      tomorrowSetupStep.value = 'error'
+    } else {
+      tomorrowSetupError.value = "Couldn't save tomorrow's setup. Try again."
+      tomorrowSetupStep.value = 'setup'
+    }
   } finally {
     tomorrowSetupSaving.value = false
   }
@@ -1631,6 +1858,9 @@ async function removeTaskFromProject(task) {
 async function deleteTask() {
   const task = pendingAction.value?.task
   if (!task || actionBusy.value) return
+  const setupDraft = tomorrowSetupDialog.value?.open && tomorrowSetupStep.value === 'setup'
+    ? { ...tomorrowSetup, manualTaskIds: [...tomorrowManualTaskIds.value] }
+    : null
   actionBusy.value = true
   actionError.value = ''
 
@@ -1647,7 +1877,12 @@ async function deleteTask() {
       selectedTaskId.value = null
       activeView.value = taskReturnView.value
     }
-    await Promise.all([loadProjects(), loadTomorrowSetup(), loadTodayTasks()])
+    await Promise.all([loadProjects(), loadTomorrowSetup(), loadTodayTasks(), loadPendingReviewTasks(true)])
+    if (setupDraft) {
+      const { manualTaskIds, ...setupValues } = setupDraft
+      Object.assign(tomorrowSetup, setupValues)
+      tomorrowManualTaskIds.value = manualTaskIds.filter((id) => id !== task.id)
+    }
     actionDialog.value?.close()
     pendingAction.value = null
     if (result.project_empty) await offerEmptyProjectDeletion(result.project_id)
@@ -1929,8 +2164,8 @@ onBeforeUnmount(() => {
                 </svg>
               </span>
               <span class="hero-setup-copy">
-                <strong>{{ tomorrowSetupLoading || pendingReviewLoading ? 'Loading setup…' : tomorrowSetupLoadError || pendingReviewError ? 'Setup unavailable' : pendingReviewTasks.length ? 'Review tasks' : tomorrowSetupSaved ? 'You’re set' : 'Set up tomorrow' }}</strong>
-                <small>{{ tomorrowSetupLoading || pendingReviewLoading ? 'One moment' : tomorrowSetupLoadError || pendingReviewError ? 'Tap to retry' : pendingReviewTasks.length ? 'Finish review to plan tomorrow' : tomorrowSetupSaved ? tomorrowSetupSummary : 'Time to plan!' }}</small>
+                <strong>{{ tomorrowSetupLoading || pendingReviewLoading ? 'Loading setup…' : tomorrowSetupLoadError || pendingReviewError ? 'Setup unavailable' : pendingReviewTasks.length ? 'Review tasks' : tomorrowReady ? 'You’re set' : tomorrowPlan.draft ? 'Review plan' : tomorrowSetupSaved ? 'Edit setup' : 'Set up tomorrow' }}</strong>
+                <small>{{ tomorrowSetupLoading || pendingReviewLoading ? 'One moment' : tomorrowSetupLoadError || pendingReviewError ? 'Tap to retry' : pendingReviewTasks.length ? 'Finish review to plan tomorrow' : tomorrowReady ? tomorrowSetupSummary : tomorrowPlan.draft ? 'Your draft is ready' : tomorrowSetupSaved ? 'Tap to finish planning' : 'Time to plan!' }}</small>
               </span>
               <svg class="hero-setup-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
@@ -1939,6 +2174,10 @@ onBeforeUnmount(() => {
           </div>
           <img class="hero-flower" src="/sunflower.svg?v=2" alt="" aria-hidden="true" />
         </section>
+
+        <div v-if="tomorrowCapacityWarnings.length" class="capacity-warnings" aria-label="Deadline and capacity warnings">
+          <p v-for="warning in tomorrowCapacityWarnings" :key="warning" class="capacity-warning" role="status">{{ warning }}</p>
+        </div>
 
         <div v-if="remindersAvailable" class="reminder-control">
           <span>20:00 reminder <strong v-if="remindersEnabled">On</strong></span>
@@ -1964,12 +2203,12 @@ onBeforeUnmount(() => {
           @close="onTomorrowSetupClose" @click.self="closeTomorrowSetup">
           <header class="options-sheet-header tomorrow-setup-header">
             <div>
-              <h2 id="tomorrow-setup-title">Set up tomorrow</h2>
+              <h2 id="tomorrow-setup-title">{{ tomorrowSetupStep === 'planning' ? 'Planning tomorrow' : tomorrowSetupStep === 'draft' ? 'Your plan for tomorrow' : tomorrowSetupStep === 'done' ? 'You’re set' : tomorrowSetupStep === 'error' ? 'Planning paused' : 'Set up tomorrow' }}</h2>
               <p>{{ tomorrowLabel }}</p>
             </div>
             <button type="button" aria-label="Close setup" @click="closeTomorrowSetup">×</button>
           </header>
-          <form class="tomorrow-setup-form" @submit.prevent="saveTomorrowSetup">
+          <form v-if="tomorrowSetupStep === 'setup'" class="tomorrow-setup-form" @submit.prevent="saveTomorrowSetup">
             <div class="options-sheet-body tomorrow-setup-body">
               <p v-if="tomorrowSetupLoading" class="list-message">Loading…</p>
               <div v-else-if="tomorrowSetupLoadError" class="tomorrow-setup-load-error" role="alert">
@@ -1977,6 +2216,7 @@ onBeforeUnmount(() => {
                 <button type="button" @click="loadTomorrowSetup">Try again</button>
               </div>
               <template v-else>
+                <p v-for="warning in tomorrowPlan.deadline_pressure_warnings" :key="warning" class="capacity-warning" role="status">{{ warning }}</p>
                 <section v-if="pendingReviewLoading || pendingReviewError || pendingReviewTasks.length" class="tomorrow-review" aria-labelledby="tomorrow-review-title">
                   <div class="tomorrow-tasks-heading">
                     <h3 id="tomorrow-review-title">Review tasks</h3>
@@ -1999,6 +2239,21 @@ onBeforeUnmount(() => {
                             @click="reviewDoneById[item.id] = true">Done</button>
                           <button type="button" :class="{ selected: !reviewDoneById[item.id] }" :aria-pressed="!reviewDoneById[item.id]"
                             @click="reviewDoneById[item.id] = false">Not done</button>
+                        </div>
+                        <div v-if="!reviewDoneById[item.id]" class="tomorrow-review-followup">
+                          <span>Next</span>
+                          <PlannerSelect v-model="reviewActionById[item.id]" :options="reviewActionOptions(item)" :label="`Next for ${item.task.title}`" />
+                          <label v-if="reviewActionById[item.id] === 'defer'" class="tomorrow-review-delay">
+                            <span>Days to wait</span>
+                            <input v-model.number="reviewDelayById[item.id]" type="number" min="1" max="365" inputmode="numeric"
+                              :aria-invalid="!!reviewFieldErrors[item.id]" />
+                          </label>
+                          <div v-if="reviewActionById[item.id] === 'date'" class="tomorrow-review-date">
+                            <span>Move to</span>
+                            <PlannerDatePicker v-model="reviewDateById[item.id]" :label="`Move ${item.task.title} to`" :invalid="!!reviewFieldErrors[item.id]" />
+                          </div>
+                          <p v-if="reviewFieldErrors[item.id]" class="form-error" role="alert">{{ reviewFieldErrors[item.id] }}</p>
+                          <button type="button" class="tomorrow-review-delete" @click="openTaskDelete(item.task)">Delete task</button>
                         </div>
                       </li>
                     </ul>
@@ -2101,6 +2356,46 @@ onBeforeUnmount(() => {
               <button type="submit" :disabled="tomorrowSetupLoading || tomorrowSetupSaving || pendingReviewLoading || Boolean(pendingReviewError)">{{ tomorrowSetupSaving ? 'Saving…' : 'Save setup' }}</button>
             </footer>
           </form>
+          <section v-else class="tomorrow-plan-stage" aria-live="polite">
+            <div class="options-sheet-body tomorrow-plan-body">
+              <div v-if="tomorrowSetupStep === 'planning'" class="tomorrow-planning-animation" role="status">
+                <PlanningDaisy />
+                <p>{{ tomorrowPlanSaving ? 'Saving your plan…' : planningPhrase }}</p>
+              </div>
+              <template v-else-if="tomorrowSetupStep === 'draft'">
+                <p v-for="warning in tomorrowCapacityWarnings" :key="warning" class="capacity-warning" role="status">{{ warning }}</p>
+                <p v-if="tomorrowPlan.draft?.note" class="planning-draft-note">{{ tomorrowPlan.draft.note }}</p>
+                <ul v-if="tomorrowPlan.draft?.tasks.length" class="planning-draft-tasks">
+                  <li v-for="task in tomorrowPlan.draft.tasks" :key="task.id">
+                    <label :class="{ 'needs-check': tomorrowPlan.draft.needs_checks_task_ids.includes(task.id) }">
+                      <input v-model="draftSelectedTaskIds" type="checkbox" :value="task.id" :disabled="tomorrowPlan.draft.needs_checks_task_ids.includes(task.id)" />
+                      <span class="planning-draft-task-copy"><strong>{{ task.title }}</strong><small>{{ task.type === 'day' ? 'Day' : 'Evening' }}<template v-if="tomorrowPlan.draft.needs_checks_task_ids.includes(task.id)"> · Research needed</template></small></span>
+                    </label>
+                  </li>
+                </ul>
+                <p v-else class="planning-draft-empty">No extra tasks suggested.</p>
+                <p v-if="tomorrowPlanError" class="form-error" role="alert">{{ tomorrowPlanError }}</p>
+                <button class="tomorrow-plan-edit" type="button" @click="tomorrowSetupStep = 'setup'">Edit setup</button>
+              </template>
+              <div v-else-if="tomorrowSetupStep === 'error'" class="tomorrow-plan-interrupted">
+                <p role="alert">{{ tomorrowPlanError }}</p>
+                <button class="tomorrow-plan-edit" type="button" @click="tomorrowSetupStep = 'setup'">Edit setup</button>
+              </div>
+              <div v-else class="tomorrow-plan-ready">
+                <img src="/sunflower.svg?v=2" alt="" aria-hidden="true" />
+                <p v-if="tomorrowPlan.note" class="planning-draft-note">{{ tomorrowPlan.note }}</p>
+                <p v-else-if="savedTomorrowSetup.day_off">Day Off is set for tomorrow.</p>
+                <ul v-if="tomorrowScheduledTasks.length">
+                  <li v-for="item in tomorrowScheduledTasks" :key="item.id">{{ item.task.title }}</li>
+                </ul>
+              </div>
+            </div>
+            <footer v-if="tomorrowSetupStep !== 'planning'" class="options-sheet-footer">
+              <button v-if="tomorrowSetupStep === 'draft'" type="button" :disabled="tomorrowPlanSaving" @click="saveTomorrowPlan">Save this plan</button>
+              <button v-else-if="tomorrowSetupStep === 'error'" type="button" @click="retryTomorrowPlanning">Try again</button>
+              <button v-else type="button" @click="closeTomorrowSetup">Close</button>
+            </footer>
+          </section>
         </dialog>
 
         <section v-if="tomorrowScheduledTasks.length" class="tomorrow-planned" aria-labelledby="tomorrow-planned-title">
@@ -2108,6 +2403,7 @@ onBeforeUnmount(() => {
             <h2 id="tomorrow-planned-title">Tomorrow’s tasks</h2>
             <span>{{ tomorrowScheduledTasks.length }}</span>
           </div>
+          <p v-if="tomorrowPlan.published && tomorrowPlan.note" class="tomorrow-plan-note">{{ tomorrowPlan.note }}</p>
           <ul>
             <li v-for="item in tomorrowScheduledTasks" :key="item.id">
               <strong>{{ item.task.title }}</strong>
@@ -2120,9 +2416,10 @@ onBeforeUnmount(() => {
             <img src="/sunflower.svg?v=2" alt="" />
           </div>
           <div>
-            <p class="section-kicker">No plan yet</p>
-            <h2 id="empty-plan-title">Tomorrow is open.</h2>
-            <p>Your plan for tomorrow will appear here.</p>
+            <p class="section-kicker">{{ tomorrowPlan.published ? 'Plan saved' : 'No plan yet' }}</p>
+            <h2 id="empty-plan-title">{{ tomorrowPlan.published ? 'Tomorrow is clear.' : 'Tomorrow is open.' }}</h2>
+            <p v-if="tomorrowPlan.published && tomorrowPlan.note">{{ tomorrowPlan.note }}</p>
+            <p v-else-if="!tomorrowPlan.published">Your plan for tomorrow will appear here.</p>
           </div>
         </section>
       </template>

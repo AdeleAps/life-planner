@@ -3,7 +3,9 @@
 use App\Http\Controllers\Api\V1\CalendarController;
 use App\Http\Controllers\Api\V1\DevResetController;
 use App\Http\Controllers\Api\V1\PlanningDayInputController;
+use App\Http\Controllers\Api\V1\PlanningDraftController;
 use App\Http\Controllers\Api\V1\PlanningFocusController;
+use App\Http\Controllers\Api\V1\PlanningPlanController;
 use App\Http\Controllers\Api\V1\ProjectController;
 use App\Http\Controllers\Api\V1\PushSubscriptionController;
 use App\Http\Controllers\Api\V1\ScheduledTaskController;
@@ -33,6 +35,9 @@ Route::delete('/v1/push/subscriptions', [PushSubscriptionController::class, 'des
 Route::get('/v1/tasks', [TaskController::class, 'index'])->name('api.v1.tasks.index');
 Route::get('/v1/planning-days/{date}/setup', [PlanningDayInputController::class, 'show'])->name('api.v1.planning-days.setup.show');
 Route::put('/v1/planning-days/{date}/setup', [PlanningDayInputController::class, 'update'])->name('api.v1.planning-days.setup.update');
+Route::post('/v1/planning-days/{date}/draft', PlanningDraftController::class)->name('api.v1.planning-days.draft');
+Route::get('/v1/planning-days/{date}/plan', [PlanningPlanController::class, 'show'])->name('api.v1.planning-days.plan.show');
+Route::post('/v1/planning-days/{date}/plan', [PlanningPlanController::class, 'store'])->name('api.v1.planning-days.plan.store');
 Route::get('/v1/planning-days/{date}/tasks', [ScheduledTaskController::class, 'index'])->name('api.v1.planning-days.tasks.index');
 Route::get('/v1/planning-review/pending', [ScheduledTaskController::class, 'pendingReview'])->name('api.v1.planning-review.pending');
 Route::post('/v1/dev/reset', DevResetController::class)->name('api.v1.dev.reset');
