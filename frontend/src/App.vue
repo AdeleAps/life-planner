@@ -40,6 +40,14 @@ const actionBusy = ref(false)
 const actionError = ref('')
 const selectedTaskId = ref(null)
 const taskReturnView = ref('tasks')
+const taskCompletions = ref([])
+const completionCount = ref(0)
+const completionsLoading = ref(false)
+const completionsError = ref('')
+const completionBusy = ref(false)
+const completionError = ref('')
+const completionRequest = ref(null)
+const completionToast = ref(null)
 const editingTaskId = ref(null)
 const editingTaskRevision = ref(null)
 const editingProjectId = ref(null)
@@ -100,6 +108,8 @@ const availableDependencies = computed(() => dependencyChoices.value.filter((ite
   item.title.toLocaleLowerCase().includes(dependencySearch.value.trim().toLocaleLowerCase())))
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value))
 const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value))
+const completedTodayCount = computed(() => taskCompletions.value.filter((completion) =>
+  localDate(new Date(completion.completed_at)) === todayDate.value).length)
 const projectOptions = computed(() => [
   { value: null, label: 'None' },
   ...projects.value.map((project) => ({ value: project.id, label: project.title })),
@@ -362,6 +372,16 @@ function formatDeadline(dateString) {
   const options = { month: 'short', day: 'numeric' }
   if (year !== new Date().getFullYear()) options.year = 'numeric'
   return new Intl.DateTimeFormat(undefined, options).format(date)
+}
+
+function formatCompletionDate(dateString) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(dateString))
+}
+
+function completionLabel(type) {
+  if (type === 'session') return 'Session finished'
+  if (type === 'final') return 'Task completed'
+  return 'Finished once'
 }
 
 function deadlineLabel() {
@@ -730,15 +750,168 @@ function showTasks() {
   loadProjects()
 }
 
+let latestCompletionLoad = 0
+let completionToastTimeout
+
+function celebrateCompletion(type) {
+  window.clearTimeout(completionToastTimeout)
+  completionToast.value = {
+    id: crypto.randomUUID(),
+    message: type === 'final' ? 'Task complete. Nice work!' : type === 'session' ? 'Session finished. Nice work!' : 'One more done. Nice work!',
+  }
+  completionToastTimeout = window.setTimeout(() => { completionToast.value = null }, 2800)
+}
+
+async function loadTaskCompletions(taskId) {
+  const loadId = ++latestCompletionLoad
+  completionsLoading.value = true
+  completionsError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/tasks/${taskId}/completions`, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
+    if (!response.ok) throw new Error('Could not load completion history')
+
+    const result = await response.json()
+    if (loadId === latestCompletionLoad && selectedTaskId.value === taskId) {
+      taskCompletions.value = result.data
+      completionCount.value = result.total
+    }
+  } catch {
+    if (loadId === latestCompletionLoad && selectedTaskId.value === taskId) {
+      completionsError.value = "Completion history couldn't be loaded."
+    }
+  } finally {
+    if (loadId === latestCompletionLoad) completionsLoading.value = false
+  }
+}
+
 function openTaskDetails(task, returnView = 'tasks') {
   selectedTaskId.value = task.id
   taskReturnView.value = returnView
   activeView.value = 'tasks'
+  taskCompletions.value = []
+  completionCount.value = 0
+  completionError.value = ''
+  completionRequest.value = null
+  loadTaskCompletions(task.id)
 }
 
 function closeTaskDetails() {
+  ++latestCompletionLoad
   selectedTaskId.value = null
   activeView.value = taskReturnView.value
+}
+
+function openQuickCompletion(task) {
+  if (task.lifecycle_state !== 'active' || completionBusy.value || actionBusy.value) return
+  pendingAction.value = { kind: 'quick-completion', task }
+  actionError.value = ''
+  actionDialog.value?.showModal()
+}
+
+async function requestTaskCompletion(type, task = selectedTask.value) {
+  if (!task || task.lifecycle_state !== 'active' || completionBusy.value || actionBusy.value) return
+
+  const fromDetails = selectedTaskId.value === task.id
+  if (fromDetails && (completionsLoading.value || completionsError.value)) return
+
+  refreshToday()
+  let todayCount = fromDetails ? completedTodayCount.value : 0
+
+  if (!fromDetails && (task.recurrence_type !== 'one_time' || task.is_multi_session)) {
+    actionBusy.value = true
+    actionError.value = ''
+    try {
+      const response = await fetch(`/api/v1/tasks/${task.id}/completions`, {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      })
+      if (!response.ok) throw new Error('Could not check completion history')
+      const result = await response.json()
+      todayCount = result.data.filter((completion) => localDate(new Date(completion.completed_at)) === todayDate.value).length
+    } catch {
+      actionError.value = "Couldn't check whether this task was finished today. Try again."
+      return
+    } finally {
+      actionBusy.value = false
+    }
+  }
+
+  if ((task.recurrence_type !== 'one_time' || task.is_multi_session) && todayCount > 0) {
+    pendingAction.value = { kind: 'repeat-completion', task, completionType: type, todayCount }
+    actionError.value = ''
+    if (!actionDialog.value?.open) actionDialog.value?.showModal()
+    return
+  }
+
+  submitTaskCompletion(type, task)
+}
+
+async function submitTaskCompletion(type, task = selectedTask.value) {
+  if (!task || completionBusy.value) return
+
+  const fromDetails = selectedTaskId.value === task.id
+  const fromActionDialog = pendingAction.value?.kind === 'quick-completion' || pendingAction.value?.kind === 'repeat-completion'
+  completionBusy.value = true
+  actionBusy.value = fromActionDialog
+  completionError.value = ''
+  actionError.value = ''
+
+  if (completionRequest.value?.taskId !== task.id || completionRequest.value?.type !== type
+    || completionRequest.value?.revision !== task.revision) {
+    completionRequest.value = { taskId: task.id, type, revision: task.revision, id: crypto.randomUUID() }
+  }
+
+  try {
+    const response = await fetch(`/api/v1/tasks/${task.id}/completions`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_request_id: completionRequest.value.id,
+        revision: completionRequest.value.revision,
+        completion_type: type,
+      }),
+    })
+    const result = await response.json()
+
+    if (!response.ok) {
+      if (response.status === 409) {
+        completionRequest.value = null
+        await loadTasks()
+        if (selectedTaskId.value === task.id) await loadTaskCompletions(task.id)
+        throw new Error('This task changed. Reopen it to get the latest version.')
+      }
+      throw new Error(result.errors?.completion_type?.[0] || "Couldn't save this completion. Try again.")
+    }
+
+    if (fromDetails) {
+      taskCompletions.value = [result.completion, ...taskCompletions.value.filter((item) => item.id !== result.completion.id)]
+      completionCount.value = result.completion_count
+    }
+    tasks.value = tasks.value.map((item) => item.id === task.id ? result.data : item)
+    completionRequest.value = null
+    actionDialog.value?.close()
+    pendingAction.value = null
+    celebrateCompletion(type)
+
+    if (type === 'final') {
+      if (fromDetails) {
+        selectedTaskId.value = null
+        activeView.value = taskReturnView.value
+      }
+      await loadTasks()
+      if (task.project_id !== null) await loadProjects()
+    }
+  } catch (error) {
+    if (fromActionDialog) actionError.value = error.message
+    else completionError.value = error.message
+  } finally {
+    completionBusy.value = false
+    actionBusy.value = false
+  }
 }
 
 function showProjects() {
@@ -1233,6 +1406,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', refreshToday)
   window.clearInterval(todayRefreshInterval)
+  window.clearTimeout(completionToastTimeout)
 })
 </script>
 
@@ -1317,6 +1491,34 @@ onBeforeUnmount(() => {
               <div v-if="selectedTask.deadline_on"><dt>Deadline</dt><dd>{{ formatDeadline(selectedTask.deadline_on) }} · {{ selectedTask.deadline_is_hard ? 'Hard' : 'Soft' }}</dd></div>
               <div v-if="selectedTask.dependencies?.length"><dt>Dependencies</dt><dd>{{ selectedTask.dependencies.map((dependency) => dependency.title).join(', ') }}</dd></div>
             </dl>
+            <div v-if="selectedTask.lifecycle_state === 'active'" class="task-completion-actions">
+              <button v-if="selectedTask.recurrence_type !== 'one_time'" type="button"
+                :disabled="completionsLoading || Boolean(completionsError) || completionBusy" @click="requestTaskCompletion('occurrence')">
+                {{ completionBusy ? 'Saving…' : 'Finish once' }}
+              </button>
+              <template v-else-if="selectedTask.is_multi_session">
+                <button type="button" :disabled="completionsLoading || Boolean(completionsError) || completionBusy"
+                  @click="requestTaskCompletion('session')">{{ completionBusy ? 'Saving…' : 'Finish session' }}</button>
+                <button class="complete-entire-task" type="button" :disabled="completionsLoading || Boolean(completionsError) || completionBusy"
+                  @click="requestTaskCompletion('final')">Complete task</button>
+              </template>
+              <button v-else type="button" :disabled="completionsLoading || Boolean(completionsError) || completionBusy"
+                @click="requestTaskCompletion('final')">{{ completionBusy ? 'Saving…' : 'Mark completed' }}</button>
+            </div>
+            <p v-if="completionError" class="form-error" role="alert">{{ completionError }}</p>
+            <div v-if="completionsError" class="completion-load-error" role="alert">
+              <span>{{ completionsError }}</span>
+              <button type="button" @click="loadTaskCompletions(selectedTask.id)">Retry</button>
+            </div>
+            <section v-if="completionCount > 0" class="completion-history" aria-label="Completion history">
+              <div class="completion-history-heading"><h2>History</h2><span>{{ completionCount }}</span></div>
+              <ol>
+                <li v-for="completion in taskCompletions" :key="completion.id">
+                  <span>{{ completionLabel(completion.completion_type) }}</span>
+                  <time :datetime="completion.completed_at">{{ formatCompletionDate(completion.completed_at) }}</time>
+                </li>
+              </ol>
+            </section>
             <div class="task-detail-controls">
               <button v-if="selectedTask.project_id && selectedTask.lifecycle_state === 'active'" class="task-remove-button" type="button"
                 :disabled="removingTaskId !== null" @click="removeTaskFromProject(selectedTask)">
@@ -1400,7 +1602,7 @@ onBeforeUnmount(() => {
               <button type="button" @click="resetTaskListView">Reset view</button>
             </div>
             <ul v-else>
-              <li v-for="task in visibleTasks" :key="task.id" class="task-list-item">
+              <li v-for="task in visibleTasks" :key="task.id" class="task-list-item" :class="{ 'has-finish-action': task.lifecycle_state === 'active' }">
                 <button class="task-row" :class="{ 'has-hard-deadline': task.lifecycle_state === 'active' && task.deadline_on && task.deadline_is_hard, 'is-overdue': isOverdue(task), 'is-completed': task.lifecycle_state === 'completed' }"
                   type="button" @click="openTaskDetails(task)">
                   <span class="task-row-copy">
@@ -1430,6 +1632,11 @@ onBeforeUnmount(() => {
                       </span>
                     </span>
                   </span>
+                </button>
+                <button v-if="task.lifecycle_state === 'active'" class="task-row-finish" type="button"
+                  :aria-label="`Finish task: ${task.title}`" :title="task.is_multi_session ? 'Finish session or complete task' : task.recurrence_type !== 'one_time' ? 'Finish once' : 'Mark completed'"
+                  :disabled="completionBusy || actionBusy" @click="openQuickCompletion(task)">
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4.5 12 5 5L19.5 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
                 </button>
                 <button class="task-row-delete" type="button" :aria-label="`Delete task: ${task.title}`" @click="openTaskDelete(task)">
                   <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m3 0-.7 12H6.7L6 7m4 3v6m4-6v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
@@ -1924,6 +2131,8 @@ onBeforeUnmount(() => {
                     <span v-if="task.deadline_on" :class="task.deadline_is_hard ? 'tag-deadline-hard' : 'tag-deadline-soft'">{{ formatDeadline(task.deadline_on) }}</span>
                   </p>
                   <div class="project-step-actions">
+                    <button class="project-step-finish" type="button" :disabled="completionBusy || actionBusy"
+                      :aria-label="`Finish task: ${task.title}`" @click="openQuickCompletion(task)">Finish</button>
                     <button class="project-step-remove" type="button" :disabled="removingTaskId !== null"
                       :aria-label="`Remove ${task.title} from project`" @click="removeTaskFromProject(task)">
                       {{ removingTaskId === task.id ? 'Removing…' : 'Remove' }}
@@ -1963,16 +2172,33 @@ onBeforeUnmount(() => {
 
     <dialog ref="actionDialog" class="options-sheet action-sheet" aria-labelledby="action-sheet-title" @click.self="closeActionDialog" @cancel="actionBusy && $event.preventDefault()">
       <header class="options-sheet-header">
-        <h2 id="action-sheet-title">{{ pendingAction?.kind === 'delete-task' ? 'Delete task?' : pendingAction?.kind === 'empty-project' ? 'Delete empty project?' : 'Delete project?' }}</h2>
+        <h2 id="action-sheet-title">{{ pendingAction?.kind === 'quick-completion' ? 'Finish task' : pendingAction?.kind === 'repeat-completion' ? 'Finish again today?' : pendingAction?.kind === 'delete-task' ? 'Delete task?' : pendingAction?.kind === 'empty-project' ? 'Delete empty project?' : 'Delete project?' }}</h2>
       </header>
       <div class="options-sheet-body action-sheet-body">
-        <p v-if="pendingAction?.kind === 'delete-task'">Delete “{{ pendingAction.task.title }}” permanently?</p>
+        <p v-if="pendingAction?.kind === 'quick-completion'">“{{ pendingAction.task.title }}”</p>
+        <p v-else-if="pendingAction?.kind === 'repeat-completion'">“{{ pendingAction.task.title }}” already has {{ pendingAction.todayCount }} {{ pendingAction.todayCount === 1 ? 'completion' : 'completions' }} today. Save another?</p>
+        <p v-else-if="pendingAction?.kind === 'delete-task'">Delete “{{ pendingAction.task.title }}” permanently?</p>
         <p v-else-if="pendingAction?.kind === 'empty-project'">“{{ pendingAction.project.title }}” has no tasks left. Delete it too?</p>
         <p v-else-if="pendingAction?.kind === 'delete-empty-project'">Delete “{{ pendingAction.project.title }}” permanently?</p>
         <p v-else-if="pendingAction?.kind === 'delete-project'">What should happen to the {{ pendingAction.project.steps_count ?? 0 }} {{ pendingAction.project.steps_count === 1 ? 'task' : 'tasks' }} in “{{ pendingAction.project.title }}”?</p>
         <p v-if="actionError" class="form-error" role="alert">{{ actionError }}</p>
         <div class="action-sheet-buttons">
-          <template v-if="pendingAction?.kind === 'delete-task'">
+          <template v-if="pendingAction?.kind === 'quick-completion'">
+            <template v-if="pendingAction.task.is_multi_session">
+              <button class="action-preserve" type="button" :disabled="actionBusy" @click="requestTaskCompletion('session', pendingAction.task)">Finish session</button>
+              <button class="action-preserve action-secondary" type="button" :disabled="actionBusy" @click="requestTaskCompletion('final', pendingAction.task)">Complete task</button>
+            </template>
+            <button v-else class="action-preserve" type="button" :disabled="actionBusy"
+              @click="requestTaskCompletion(pendingAction.task.recurrence_type !== 'one_time' ? 'occurrence' : 'final', pendingAction.task)">
+              {{ pendingAction.task.recurrence_type !== 'one_time' ? 'Finish once' : 'Mark completed' }}
+            </button>
+          </template>
+          <template v-else-if="pendingAction?.kind === 'repeat-completion'">
+            <button class="action-preserve" type="button" :disabled="actionBusy" @click="submitTaskCompletion(pendingAction.completionType, pendingAction.task)">
+              {{ actionBusy ? 'Saving…' : pendingAction.completionType === 'final' ? 'Complete task anyway' : 'Save another completion' }}
+            </button>
+          </template>
+          <template v-else-if="pendingAction?.kind === 'delete-task'">
             <button class="action-destructive" type="button" :disabled="actionBusy" @click="deleteTask">{{ actionBusy ? 'Deleting…' : 'Delete task' }}</button>
           </template>
           <template v-else-if="pendingAction?.kind === 'delete-project'">
@@ -1986,6 +2212,13 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </dialog>
+
+    <Transition name="completion-toast" mode="out-in">
+      <div v-if="completionToast" :key="completionToast.id" class="completion-celebration" role="status" aria-live="polite">
+        <span class="completion-celebration-flower" aria-hidden="true"><img src="/sunflower.svg?v=2" alt="" /></span>
+        <strong>{{ completionToast.message }}</strong>
+      </div>
+    </Transition>
 
     <nav class="main-nav" aria-label="Main navigation">
       <button type="button" :aria-pressed="activeView === 'tomorrow'" @click="activeView = 'tomorrow'">

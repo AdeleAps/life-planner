@@ -52,6 +52,11 @@ class Task extends Model
         return $this->belongsToMany(self::class, 'task_dependencies', 'task_id', 'depends_on_task_id');
     }
 
+    public function completions(): HasMany
+    {
+        return $this->hasMany(TaskCompletion::class);
+    }
+
     public function dependenciesComplete(): bool
     {
         return $this->dependencies->every(fn (self $dependency): bool => $dependency->lifecycle_state === 'completed');
