@@ -20,9 +20,7 @@ return new class extends Migration
             $table->string('kind')->default('one_off');
             $table->string('type')->default('evening');
             $table->string('priority')->default('standard');
-            $table->string('energy_cost');
-            $table->unsignedSmallInteger('duration_min_minutes')->nullable();
-            $table->unsignedSmallInteger('duration_max_minutes')->nullable();
+            $table->string('energy_cost')->nullable();
             $table->string('lifecycle_state')->default('active');
             $table->unsignedInteger('revision')->default(1);
             $table->timestamps();

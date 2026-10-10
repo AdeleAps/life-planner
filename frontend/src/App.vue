@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 
 const tomorrow = new Date()
 tomorrow.setDate(tomorrow.getDate() + 1)
@@ -20,11 +20,19 @@ const saveError = ref('')
 const saveMessage = ref('')
 const isSaving = ref(false)
 const clientRequestId = ref(crypto.randomUUID())
+const taskTitleInput = ref(null)
+const taskTypeDetail = ref(null)
+const energyDetail = ref(null)
+const contextDetail = ref(null)
 const taskForm = reactive({
   title: '',
   description: '',
   type: 'evening',
-  energy_cost: '',
+  energy_cost: 'standard',
+})
+
+watch(() => taskForm.type, (type) => {
+  taskForm.energy_cost = type === 'evening' ? 'standard' : null
 })
 
 async function checkServer() {
@@ -75,33 +83,60 @@ function showTasks() {
   loadTasks()
 }
 
+async function openTaskForm() {
+  showTasks()
+  await nextTick()
+  taskTitleInput.value?.focus()
+}
+
+function closeOtherDetails(event) {
+  if (!event.target.open) return
+
+  for (const detail of [taskTypeDetail.value, energyDetail.value, contextDetail.value]) {
+    if (detail && detail !== event.target) detail.open = false
+  }
+}
+
+function finishChoice(field) {
+  const detail = field === 'type' ? taskTypeDetail.value : energyDetail.value
+  if (!detail) return
+
+  detail.open = false
+  detail.querySelector('summary')?.focus({ preventScroll: true })
+}
+
+function closeAllDetails() {
+  for (const detail of [taskTypeDetail.value, energyDetail.value, contextDetail.value]) {
+    if (detail) detail.open = false
+  }
+}
+
 async function saveTask() {
   if (isSaving.value) return
-
-  if (!taskForm.energy_cost) {
-    saveError.value = 'Choose the energy needed before saving.'
-    saveMessage.value = ''
-    return
-  }
 
   isSaving.value = true
   saveError.value = ''
   saveMessage.value = ''
 
   try {
+    const taskInput = {
+      client_request_id: clientRequestId.value,
+      title: taskForm.title.trim(),
+      description: taskForm.description.trim() || null,
+      type: taskForm.type,
+    }
+
+    if (taskForm.type === 'evening') {
+      taskInput.energy_cost = taskForm.energy_cost
+    }
+
     const response = await fetch('/api/v1/tasks', {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        client_request_id: clientRequestId.value,
-        title: taskForm.title.trim(),
-        description: taskForm.description.trim() || null,
-        type: taskForm.type,
-        energy_cost: taskForm.energy_cost,
-      }),
+      body: JSON.stringify(taskInput),
     })
     const result = await response.json()
 
@@ -114,9 +149,10 @@ async function saveTask() {
     taskForm.title = ''
     taskForm.description = ''
     taskForm.type = 'evening'
-    taskForm.energy_cost = ''
+    taskForm.energy_cost = 'standard'
     clientRequestId.value = crypto.randomUUID()
     saveMessage.value = 'Task saved.'
+    closeAllDetails()
   } catch (error) {
     saveError.value = error.message || 'Task could not be saved.'
   } finally {
@@ -131,7 +167,7 @@ onMounted(checkServer)
   <div class="app-shell">
     <header class="app-header">
       <div class="brand-lockup">
-        <img class="brand-flower" src="/sunflower.svg" alt="" />
+        <img class="brand-flower" src="/sunflower.svg?v=2" alt="" />
         <span class="wordmark">Planner</span>
       </div>
     </header>
@@ -151,12 +187,24 @@ onMounted(checkServer)
             <h1 id="tomorrow-title">Tomorrow<span class="title-dot">.</span></h1>
             <p class="hero-date">{{ tomorrowLabel }}</p>
           </div>
-          <img class="hero-flower" src="/sunflower.svg" alt="" aria-hidden="true" />
+          <img class="hero-flower" src="/sunflower.svg?v=2" alt="" aria-hidden="true" />
         </section>
+
+        <button class="add-task-shortcut" type="button" @click="openTaskForm">
+          <span class="shortcut-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+            </svg>
+          </span>
+          <span>Add a task</span>
+          <svg class="shortcut-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
 
         <section class="empty-plan" aria-labelledby="empty-plan-title">
           <div class="empty-plan-mark" aria-hidden="true">
-            <img src="/sunflower.svg" alt="" />
+            <img src="/sunflower.svg?v=2" alt="" />
           </div>
           <div>
             <p class="section-kicker">No plan yet</p>
@@ -167,65 +215,71 @@ onMounted(checkServer)
       </template>
 
       <template v-else>
-        <section class="hero hero-tasks" aria-labelledby="tasks-title">
-          <div class="hero-content">
-            <p class="hero-kicker">Your task library</p>
-            <h1 id="tasks-title">Tasks<span class="title-dot">.</span></h1>
-            <p class="hero-date">Save it now. Schedule it later.</p>
-          </div>
-          <span v-if="!tasksLoading && !tasksError" class="hero-count">{{ tasks.length }} saved</span>
-        </section>
+        <header class="tasks-heading">
+          <h1>Tasks</h1>
+          <span v-if="!tasksLoading && !tasksError" class="tasks-count">{{ tasks.length }} saved</span>
+        </header>
 
-        <section class="task-panel" aria-labelledby="add-task-title">
-          <div class="panel-heading">
-            <p class="section-kicker">Quick capture</p>
-            <h2 id="add-task-title">Add a task</h2>
-          </div>
+        <section class="task-panel" aria-label="Add a task">
           <form class="task-form" @submit.prevent="saveTask">
             <label class="field">
               <span>What needs doing?</span>
-              <input v-model="taskForm.title" type="text" maxlength="255" required placeholder="e.g. Sort my paperwork" />
+              <input ref="taskTitleInput" v-model="taskForm.title" type="text" maxlength="255" required />
             </label>
 
-            <label class="field">
-              <span>Context <small>optional</small></span>
-              <textarea v-model="taskForm.description" rows="3" maxlength="5000" placeholder="Anything you want to remember about it"></textarea>
-            </label>
+            <div class="form-details">
+              <details ref="taskTypeDetail" class="form-detail" @toggle="closeOtherDetails">
+                <summary>
+                  <span>Task type</span>
+                  <span class="detail-value">{{ taskForm.type === 'day' ? 'Day' : 'Evening' }}</span>
+                </summary>
+                <div class="detail-content">
+                  <div class="choice-grid type-choices" role="radiogroup" aria-label="Task type">
+                    <label class="choice-option" :class="{ selected: taskForm.type === 'evening' }">
+                      <input v-model="taskForm.type" type="radio" name="task-type" value="evening" @change="finishChoice('type')" />
+                      <span>Evening</span>
+                      <small>Substantial</small>
+                    </label>
+                    <label class="choice-option" :class="{ selected: taskForm.type === 'day' }">
+                      <input v-model="taskForm.type" type="radio" name="task-type" value="day" @change="finishChoice('type')" />
+                      <span>Day</span>
+                      <small>Quick item</small>
+                    </label>
+                  </div>
+                </div>
+              </details>
 
-            <div class="choice-groups">
-              <fieldset class="choice-group">
-                <legend>Task type</legend>
-                <div class="choice-grid type-choices">
-                  <label class="choice-option" :class="{ selected: taskForm.type === 'evening' }">
-                    <input v-model="taskForm.type" type="radio" name="task-type" value="evening" />
-                    <span>Evening</span>
-                    <small>Substantial</small>
-                  </label>
-                  <label class="choice-option" :class="{ selected: taskForm.type === 'day' }">
-                    <input v-model="taskForm.type" type="radio" name="task-type" value="day" />
-                    <span>Day</span>
-                    <small>Quick item</small>
+              <details v-if="taskForm.type === 'evening'" ref="energyDetail" class="form-detail" @toggle="closeOtherDetails">
+                <summary>
+                  <span>Energy needed</span>
+                  <span class="detail-value">{{ taskForm.energy_cost === 'high' ? 'High' : 'Standard' }}</span>
+                </summary>
+                <div class="detail-content">
+                  <div class="choice-grid energy-choices" role="radiogroup" aria-label="Energy needed">
+                    <label class="choice-option energy-option" :class="{ selected: taskForm.energy_cost === 'standard' }">
+                      <input v-model="taskForm.energy_cost" type="radio" name="energy" value="standard" @change="finishChoice('energy')" />
+                      <span>Standard</span>
+                    </label>
+                    <label class="choice-option energy-option" :class="{ selected: taskForm.energy_cost === 'high' }">
+                      <input v-model="taskForm.energy_cost" type="radio" name="energy" value="high" @change="finishChoice('energy')" />
+                      <span>High</span>
+                    </label>
+                  </div>
+                </div>
+              </details>
+
+              <details ref="contextDetail" class="form-detail" @toggle="closeOtherDetails">
+                <summary>
+                  <span>Context</span>
+                  <span class="detail-value">{{ taskForm.description.trim() ? 'Added' : 'Optional' }}</span>
+                </summary>
+                <div class="detail-content">
+                  <label class="field">
+                    <span class="visually-hidden">Context</span>
+                    <textarea v-model="taskForm.description" rows="3" maxlength="5000"></textarea>
                   </label>
                 </div>
-              </fieldset>
-
-              <fieldset class="choice-group">
-                <legend>Energy needed</legend>
-                <div class="choice-grid energy-choices">
-                  <label class="choice-option energy-option" :class="{ selected: taskForm.energy_cost === 'low' }">
-                    <input v-model="taskForm.energy_cost" type="radio" name="energy" value="low" />
-                    <span>Low</span>
-                  </label>
-                  <label class="choice-option energy-option" :class="{ selected: taskForm.energy_cost === 'medium' }">
-                    <input v-model="taskForm.energy_cost" type="radio" name="energy" value="medium" />
-                    <span>Medium</span>
-                  </label>
-                  <label class="choice-option energy-option" :class="{ selected: taskForm.energy_cost === 'high' }">
-                    <input v-model="taskForm.energy_cost" type="radio" name="energy" value="high" />
-                    <span>High</span>
-                  </label>
-                </div>
-              </fieldset>
+              </details>
             </div>
 
             <p v-if="saveError" class="form-error" role="alert">{{ saveError }}</p>
@@ -238,10 +292,7 @@ onMounted(checkServer)
 
         <section class="task-list" aria-labelledby="saved-tasks-title">
           <div class="list-heading">
-            <div>
-              <p class="section-kicker">Your library</p>
-              <h2 id="saved-tasks-title">Saved tasks</h2>
-            </div>
+            <h2 id="saved-tasks-title">Saved tasks</h2>
           </div>
           <p v-if="tasksLoading" class="list-message">Loading tasks…</p>
           <div v-else-if="tasksError" class="list-message" role="alert">
@@ -257,7 +308,7 @@ onMounted(checkServer)
               </div>
               <p class="task-meta">
                 <span :class="task.type === 'day' ? 'tag-day' : 'tag-evening'">{{ task.type === 'day' ? 'Day' : 'Evening' }}</span>
-                <span class="tag-energy">{{ task.energy_cost }} energy</span>
+                <span v-if="task.type === 'evening' && task.energy_cost" class="tag-energy">{{ task.energy_cost === 'high' ? 'High' : 'Standard' }} energy</span>
               </p>
             </li>
           </ul>

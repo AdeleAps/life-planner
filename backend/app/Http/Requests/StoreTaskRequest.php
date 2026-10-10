@@ -28,7 +28,10 @@ class StoreTaskRequest extends FormRequest
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:5000'],
             'type' => ['sometimes', Rule::in(['day', 'evening'])],
-            'energy_cost' => ['required', Rule::in(['low', 'medium', 'high'])],
+            'energy_cost' => [
+                Rule::prohibitedIf($this->input('type') === 'day'),
+                Rule::in(['standard', 'high']),
+            ],
         ];
     }
 }

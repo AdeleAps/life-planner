@@ -24,6 +24,7 @@ class TaskController extends Controller
     public function store(StoreTaskRequest $request): JsonResponse
     {
         $input = $request->validated();
+        $taskType = $input['type'] ?? 'evening';
 
         $task = Task::query()->firstOrCreate(
             ['client_request_id' => $input['client_request_id']],
@@ -32,9 +33,9 @@ class TaskController extends Controller
                 'description' => $input['description'] ?? null,
                 'source' => 'form',
                 'kind' => 'one_off',
-                'type' => $input['type'] ?? 'evening',
+                'type' => $taskType,
                 'priority' => 'standard',
-                'energy_cost' => $input['energy_cost'],
+                'energy_cost' => $taskType === 'day' ? null : ($input['energy_cost'] ?? 'standard'),
                 'lifecycle_state' => 'active',
                 'revision' => 1,
             ],

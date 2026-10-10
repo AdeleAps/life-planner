@@ -26,7 +26,7 @@ class TaskFactory extends Factory
             'kind' => 'one_off',
             'type' => 'evening',
             'priority' => 'standard',
-            'energy_cost' => 'medium',
+            'energy_cost' => 'standard',
             'lifecycle_state' => 'active',
             'revision' => 1,
         ];

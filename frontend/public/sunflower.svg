@@ -1,29 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
   <g transform="translate(32 32)">
-    <g fill="#FFCC24">
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(30)"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(60)"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(90)"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(120)"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(150)"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(180)"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(210)"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(240)"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(270)"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(300)"/>
-      <ellipse cx="0" cy="-19" rx="6" ry="12.5" transform="rotate(330)"/>
+    <g fill="#EBAA19">
+      <path d="M-5-12C-8-19-6-25 0-30C6-25 8-19 5-12Z" transform="rotate(30)"/>
+      <path d="M-5-12C-8-19-6-25 0-30C6-25 8-19 5-12Z" transform="rotate(90)"/>
+      <path d="M-5-12C-8-19-6-25 0-30C6-25 8-19 5-12Z" transform="rotate(150)"/>
+      <path d="M-5-12C-8-19-6-25 0-30C6-25 8-19 5-12Z" transform="rotate(210)"/>
+      <path d="M-5-12C-8-19-6-25 0-30C6-25 8-19 5-12Z" transform="rotate(270)"/>
+      <path d="M-5-12C-8-19-6-25 0-30C6-25 8-19 5-12Z" transform="rotate(330)"/>
+    </g>
+    <g fill="#FFD12E">
+      <path d="M-5.3-12C-8.5-19.5-6.8-26 0-31C6.8-26 8.5-19.5 5.3-12Z"/>
+      <path d="M-5.3-12C-8.5-19.5-6.8-26 0-31C6.8-26 8.5-19.5 5.3-12Z" transform="rotate(60)"/>
+      <path d="M-5.3-12C-8.5-19.5-6.8-26 0-31C6.8-26 8.5-19.5 5.3-12Z" transform="rotate(120)"/>
+      <path d="M-5.3-12C-8.5-19.5-6.8-26 0-31C6.8-26 8.5-19.5 5.3-12Z" transform="rotate(180)"/>
+      <path d="M-5.3-12C-8.5-19.5-6.8-26 0-31C6.8-26 8.5-19.5 5.3-12Z" transform="rotate(240)"/>
+      <path d="M-5.3-12C-8.5-19.5-6.8-26 0-31C6.8-26 8.5-19.5 5.3-12Z" transform="rotate(300)"/>
     </g>
     <circle r="14" fill="#123E36"/>
-    <circle r="10" fill="#1F6C55"/>
-    <g fill="#FFE889">
-      <circle cx="0" cy="-5" r="1.2"/>
-      <circle cx="4.3" cy="-2.5" r="1.2"/>
-      <circle cx="4.3" cy="2.5" r="1.2"/>
-      <circle cx="0" cy="5" r="1.2"/>
-      <circle cx="-4.3" cy="2.5" r="1.2"/>
-      <circle cx="-4.3" cy="-2.5" r="1.2"/>
-      <circle cx="0" cy="0" r="1.2"/>
-    </g>
+    <circle r="10.7" stroke="#F3BF2A" stroke-width="0.9" opacity="0.8"/>
+    <path d="M-4-7l1.5 1.5M1-7l1.5 1.5M-7-3l1.5 1.5M-2-3l1.5 1.5M3-3l1.5 1.5M-5 1l1.5 1.5M0 1l1.5 1.5M5 1l1.5 1.5M-2 5l1.5 1.5M3 5l1.5 1.5" stroke="#F3BF2A" stroke-width="1.2" stroke-linecap="round" opacity="0.65"/>
   </g>
 </svg>

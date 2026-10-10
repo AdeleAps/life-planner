@@ -16,8 +16,6 @@ use Illuminate\Database\Eloquent\Model;
     'type',
     'priority',
     'energy_cost',
-    'duration_min_minutes',
-    'duration_max_minutes',
     'lifecycle_state',
     'revision',
 ])]
