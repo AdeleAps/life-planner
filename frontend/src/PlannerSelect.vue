@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 
 const props = defineProps({
-  modelValue: { type: [String, Number], required: true },
+  modelValue: { required: true },
   options: { type: Array, required: true },
   label: { type: String, required: true },
   invalid: { type: Boolean, default: false },

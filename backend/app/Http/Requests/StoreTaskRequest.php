@@ -34,6 +34,19 @@ class StoreTaskRequest extends FormRequest
             'client_request_id' => ['required', 'uuid'],
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:5000'],
+            'project_id' => [
+                'nullable',
+                Rule::prohibitedIf($recurrenceType !== 'one_time'),
+                'integer',
+                Rule::exists('tasks', 'id')->where('item_type', 'project')->where('lifecycle_state', 'active'),
+            ],
+            'dependency_ids' => ['nullable', 'array'],
+            'dependency_ids.*' => [
+                'integer',
+                'distinct',
+                Rule::notIn(array_filter([$this->input('project_id')])),
+                Rule::exists('tasks', 'id'),
+            ],
             'type' => ['sometimes', Rule::in(['day', 'evening'])],
             'priority' => [
                 Rule::prohibitedIf($taskType === 'day'),

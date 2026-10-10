@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\V1\ProjectController;
 use App\Http\Controllers\Api\V1\TaskController;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Route;
@@ -10,3 +11,6 @@ Route::get('/v1/health', static function (): JsonResponse {
 
 Route::get('/v1/tasks', [TaskController::class, 'index'])->name('api.v1.tasks.index');
 Route::post('/v1/tasks', [TaskController::class, 'store'])->name('api.v1.tasks.store');
+Route::patch('/v1/tasks/{task}/project', [TaskController::class, 'attachToProject'])->name('api.v1.tasks.attach-to-project');
+Route::get('/v1/projects', [ProjectController::class, 'index'])->name('api.v1.projects.index');
+Route::post('/v1/projects', [ProjectController::class, 'store'])->name('api.v1.projects.store');

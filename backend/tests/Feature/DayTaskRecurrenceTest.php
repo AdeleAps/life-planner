@@ -35,7 +35,7 @@ class DayTaskRecurrenceTest extends TestCase
         $this->assertDatabaseHas('tasks', [
             'title' => 'Water plants',
             'type' => 'day',
-            'kind' => 'recurring',
+            'item_type' => 'task',
         ]);
     }
 

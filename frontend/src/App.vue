@@ -12,16 +12,27 @@ const tomorrowLabel = new Intl.DateTimeFormat(undefined, {
 }).format(tomorrow)
 
 const activeView = ref('tomorrow')
+const entryKind = ref('task')
 const serverAvailable = ref(true)
 const isCheckingServer = ref(false)
 const tasks = ref([])
+const projects = ref([])
+const selectedProjectId = ref(null)
+const projectTaskDialog = ref(null)
+const projectTaskSearch = ref('')
+const projectTaskSavingId = ref(null)
+const projectTaskError = ref('')
+const selectedTaskId = ref(null)
+const taskReturnView = ref('tasks')
 const tasksLoading = ref(false)
 const tasksError = ref('')
+const projectsLoading = ref(false)
+const projectsError = ref('')
 const saveError = ref('')
 const saveMessage = ref('')
 const fieldErrors = reactive({})
 const isSaving = ref(false)
-const clientRequestId = ref(crypto.randomUUID())
+const clientRequestIds = reactive({ task: crypto.randomUUID(), project: crypto.randomUUID() })
 const taskTitleInput = ref(null)
 const optionsTrigger = ref(null)
 const optionsDialog = ref(null)
@@ -31,7 +42,11 @@ const priorityDetail = ref(null)
 const repeatDetail = ref(null)
 const multiSessionDetail = ref(null)
 const deadlineDetail = ref(null)
+const dependenciesDetail = ref(null)
+const projectDetail = ref(null)
 const contextDetail = ref(null)
+const dependencySearch = ref('')
+const dependencySearchInput = ref(null)
 const scheduleIntervalInput = ref(null)
 const weekdayField = ref(null)
 const monthDayInput = ref(null)
@@ -45,6 +60,26 @@ const repeatHasError = computed(() => repeatErrorFields.some((field) => fieldErr
 const deadlineErrorFields = ['deadline', 'deadline_date', 'deadline_amount']
 const deadlineHasError = computed(() => deadlineErrorFields.some((field) => fieldErrors[field]))
 const optionsHaveError = computed(() => Object.keys(fieldErrors).some((field) => field !== 'title'))
+const dependencyChoices = computed(() => [...tasks.value, ...projects.value].filter((item) =>
+  entryKind.value === 'project' || item.id !== taskForm.project_id))
+const availableDependencies = computed(() => dependencyChoices.value.filter((item) =>
+  item.title.toLocaleLowerCase().includes(dependencySearch.value.trim().toLocaleLowerCase())))
+const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value))
+const selectedTask = computed(() => tasks.value.find((task) => task.id === selectedTaskId.value))
+const projectOptions = computed(() => [
+  { value: null, label: 'None' },
+  ...projects.value.map((project) => ({ value: project.id, label: project.title })),
+])
+const projectSteps = computed(() => tasks.value.filter((task) => task.project_id === selectedProjectId.value))
+const eligibleProjectTasks = computed(() => tasks.value.filter((task) =>
+  task.item_type === 'task'
+  && task.lifecycle_state === 'active'
+  && task.project_id === null
+  && task.recurrence_type === 'one_time'
+  && !task.dependencies?.some((dependency) => dependency.id === selectedProjectId.value)
+  && !selectedProject.value?.dependencies?.some((dependency) => dependency.id === task.id)))
+const filteredProjectTasks = computed(() => eligibleProjectTasks.value.filter((task) =>
+  task.title.toLocaleLowerCase().includes(projectTaskSearch.value.trim().toLocaleLowerCase())))
 const priorityOptions = [
   { value: 'low', label: 'Low' },
   { value: 'standard', label: 'Standard' },
@@ -112,6 +147,12 @@ const taskForm = reactive({
   priority: 'standard',
   recurrence_type: 'one_time',
   is_multi_session: false,
+  dependency_ids: [],
+  project_id: null,
+})
+
+watch(() => taskForm.project_id, (projectId) => {
+  if (projectId !== null) taskForm.dependency_ids = taskForm.dependency_ids.filter((id) => id !== projectId)
 })
 
 watch(() => taskForm.type, (type) => {
@@ -230,19 +271,25 @@ function repeatLabel(type, rule) {
 const optionsSummary = computed(() => {
   const changes = []
 
-  if (taskForm.type === 'evening') {
+  if (entryKind.value === 'project') {
+    if (taskForm.priority !== 'standard') changes.push(`${priorityLabel(taskForm.priority)} priority`)
+  } else if (taskForm.type === 'evening') {
     if (taskForm.energy_cost === 'high') changes.push('High energy')
     if (taskForm.priority !== 'standard') changes.push(`${priorityLabel(taskForm.priority)} priority`)
   }
-  if (taskForm.recurrence_type !== 'one_time') changes.push(repeatLabel(taskForm.recurrence_type, currentRepeatRule()))
-  if (taskForm.type === 'evening' && taskForm.recurrence_type === 'one_time') {
-    if (taskForm.is_multi_session) changes.push('Multi-session')
+  if (entryKind.value === 'task' && taskForm.recurrence_type !== 'one_time') changes.push(repeatLabel(taskForm.recurrence_type, currentRepeatRule()))
+  if (entryKind.value === 'project' || (taskForm.type === 'evening' && taskForm.recurrence_type === 'one_time')) {
+    if (entryKind.value === 'task' && taskForm.is_multi_session) changes.push('Multi-session')
     if (deadlineForm.mode !== 'none') {
       const date = deadlineOn()
       changes.push(date ? `${deadlineForm.is_hard ? 'Hard' : 'Soft'} deadline ${formatDeadline(date)}` : 'Deadline')
     }
   }
+  if (entryKind.value === 'task' && taskForm.project_id !== null) {
+    changes.push(projects.value.find((project) => project.id === taskForm.project_id)?.title || 'Project')
+  }
   if (taskForm.description.trim()) changes.push('Description')
+  if (taskForm.dependency_ids.length) changes.push(`${taskForm.dependency_ids.length} ${taskForm.dependency_ids.length === 1 ? 'dependency' : 'dependencies'}`)
 
   if (changes.length === 0) return 'Defaults'
   if (changes.length > 2) return `${changes.slice(0, 2).join(' · ')} +${changes.length - 2}`
@@ -281,7 +328,17 @@ function validWholeNumber(value, minimum, maximum) {
 
 function validateTaskForm() {
   const errors = {}
-  if (!taskForm.title.trim()) errors.title = 'Give this task a name.'
+  if (!taskForm.title.trim()) errors.title = entryKind.value === 'project' ? 'Give this project a name.' : 'Give this task a name.'
+
+  if (entryKind.value === 'project') {
+    if (deadlineForm.mode === 'date' && !validDate(deadlineForm.date)) errors.deadline_date = 'Choose a date.'
+    if (deadlineForm.mode === 'relative' && !validWholeNumber(deadlineForm.amount, 1, 999)) errors.deadline_amount = 'Enter 1–999.'
+    return errors
+  }
+
+  if (taskForm.project_id !== null && taskForm.recurrence_type !== 'one_time') {
+    errors.project = 'Project steps must be one-time.'
+  }
 
   if (taskForm.recurrence_type === 'one_time') {
     if (taskForm.type === 'evening' && deadlineForm.mode === 'date' && !validDate(deadlineForm.date)) {
@@ -371,7 +428,10 @@ function mapServerErrors(errors) {
   const fieldMap = {
     title: ['title', 'Give this task a name.'],
     priority: ['priority', 'Choose a priority.'],
+    project_id: ['project', 'Choose an active project.'],
     is_multi_session: ['sessions', 'Check sessions.'],
+    dependency_ids: ['dependencies', 'Check dependencies.'],
+    'dependency_ids.*': ['dependencies', 'Choose saved tasks.'],
     deadline_on: deadlineForm.mode === 'date'
       ? ['deadline_date', 'Choose a date.']
       : ['deadline', 'Check the deadline.'],
@@ -387,6 +447,7 @@ function mapServerErrors(errors) {
 
   for (const key of Object.keys(errors)) {
     const [field, message] = fieldMap[key]
+      || (key.startsWith('dependency_ids.') ? fieldMap['dependency_ids.*'] : null)
       || (key.startsWith('recurrence_rule.weekdays.') ? fieldMap['recurrence_rule.weekdays'] : null)
       || (key.startsWith('recurrence_') ? ['repeat', 'Check the repeat settings.'] : [null, null])
     if (field && !mapped[field]) mapped[field] = message
@@ -401,7 +462,9 @@ async function focusFirstError() {
 
   if (firstField !== 'title') openOptions()
   if (firstField === 'priority' && priorityDetail.value) priorityDetail.value.open = true
+  else if (firstField === 'project' && projectDetail.value) projectDetail.value.open = true
   else if (firstField === 'sessions' && multiSessionDetail.value) multiSessionDetail.value.open = true
+  else if (firstField === 'dependencies' && dependenciesDetail.value) dependenciesDetail.value.open = true
   else if (deadlineHasError.value && deadlineDetail.value) deadlineDetail.value.open = true
   else if (repeatHasError.value && repeatDetail.value) repeatDetail.value.open = true
   await nextTick()
@@ -409,7 +472,9 @@ async function focusFirstError() {
   const targets = {
     title: taskTitleInput.value,
     priority: priorityDetail.value?.querySelector('summary'),
+    project: projectDetail.value?.querySelector('summary'),
     sessions: multiSessionDetail.value?.querySelector('summary'),
+    dependencies: dependencySearchInput.value || dependenciesDetail.value?.querySelector('summary'),
     deadline: deadlineDetail.value?.querySelector('summary'),
     deadline_date: deadlineDateInput.value,
     deadline_amount: deadlineAmountInput.value,
@@ -475,9 +540,68 @@ async function loadTasks() {
   }
 }
 
+async function loadProjects() {
+  projectsLoading.value = true
+  projectsError.value = ''
+
+  try {
+    const response = await fetch('/api/v1/projects', {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
+
+    if (!response.ok) throw new Error('Could not load projects')
+    projects.value = (await response.json()).data
+  } catch {
+    projectsError.value = "Projects couldn't be loaded. Try again."
+  } finally {
+    projectsLoading.value = false
+  }
+}
+
 function showTasks() {
   activeView.value = 'tasks'
+  selectedTaskId.value = null
   loadTasks()
+  loadProjects()
+}
+
+function openTaskDetails(task, returnView = 'tasks') {
+  selectedTaskId.value = task.id
+  taskReturnView.value = returnView
+  activeView.value = 'tasks'
+}
+
+function closeTaskDetails() {
+  selectedTaskId.value = null
+  activeView.value = taskReturnView.value
+}
+
+function showProjects() {
+  activeView.value = 'projects'
+  selectedProjectId.value = null
+  loadProjects()
+  loadTasks()
+}
+
+async function openProjectForm() {
+  resetCaptureForm()
+  clientRequestIds.project = crypto.randomUUID()
+  setEntryKind('project')
+  activeView.value = 'capture'
+  loadTasks()
+  loadProjects()
+  await nextTick()
+  taskTitleInput.value?.focus()
+}
+
+function setEntryKind(kind) {
+  entryKind.value = kind
+  if (kind === 'project' && !taskForm.priority) taskForm.priority = 'standard'
+  replaceFieldErrors({})
+  saveError.value = ''
+  saveMessage.value = ''
+  closeAllDetails()
 }
 
 function openOptions() {
@@ -494,16 +618,61 @@ function onOptionsClose() {
   optionsTrigger.value?.focus({ preventScroll: true })
 }
 
-async function openTaskForm() {
-  showTasks()
+async function openTaskForm(projectId = null) {
+  resetCaptureForm()
+  clientRequestIds.task = crypto.randomUUID()
+  setEntryKind('task')
+  taskForm.project_id = projectId
+  activeView.value = 'capture'
+  loadTasks()
+  loadProjects()
   await nextTick()
   taskTitleInput.value?.focus()
+}
+
+function openProjectTaskPicker() {
+  projectTaskSearch.value = ''
+  projectTaskError.value = ''
+  projectTaskDialog.value?.showModal()
+  loadTasks()
+}
+
+function createTaskInProject() {
+  projectTaskDialog.value?.close()
+  openTaskForm(selectedProjectId.value)
+}
+
+async function addExistingTaskToProject(task) {
+  if (projectTaskSavingId.value !== null || selectedProjectId.value === null) return
+
+  projectTaskSavingId.value = task.id
+  projectTaskError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/tasks/${task.id}/project`, {
+      method: 'PATCH',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: selectedProjectId.value }),
+    })
+    const result = await response.json()
+
+    if (!response.ok) {
+      throw new Error(result.errors?.project_id?.[0] || "Couldn't add this task. Try again.")
+    }
+
+    tasks.value = tasks.value.map((item) => item.id === task.id ? result.data : item)
+    projectTaskDialog.value?.close()
+  } catch (error) {
+    projectTaskError.value = error.message || "Couldn't add this task. Try again."
+  } finally {
+    projectTaskSavingId.value = null
+  }
 }
 
 function closeOtherDetails(event) {
   if (!event.target.open) return
 
-  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, deadlineDetail.value, contextDetail.value]) {
+  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, deadlineDetail.value, projectDetail.value, dependenciesDetail.value, contextDetail.value]) {
     if (detail && detail !== event.target) detail.open = false
   }
 }
@@ -525,9 +694,28 @@ function finishPriorityChoice() {
 }
 
 function closeAllDetails() {
-  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, deadlineDetail.value, contextDetail.value]) {
+  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, deadlineDetail.value, projectDetail.value, dependenciesDetail.value, contextDetail.value]) {
     if (detail) detail.open = false
   }
+}
+
+function resetCaptureForm() {
+  taskForm.title = ''
+  taskForm.description = ''
+  taskForm.type = 'evening'
+  taskForm.energy_cost = 'standard'
+  taskForm.priority = 'standard'
+  taskForm.recurrence_type = 'one_time'
+  taskForm.is_multi_session = false
+  taskForm.dependency_ids = []
+  taskForm.project_id = null
+  dependencySearch.value = ''
+  Object.assign(repeatForm, initialRepeatValues())
+  resetDeadlineForm()
+  replaceFieldErrors({})
+  saveError.value = ''
+  saveMessage.value = ''
+  closeAllDetails()
 }
 
 async function saveTask() {
@@ -545,30 +733,42 @@ async function saveTask() {
   isSaving.value = true
 
   try {
+    const isProject = entryKind.value === 'project'
     const taskInput = {
-      client_request_id: clientRequestId.value,
+      client_request_id: clientRequestIds[entryKind.value],
       title: taskForm.title.trim(),
       description: taskForm.description.trim() || null,
-      type: taskForm.type,
-      recurrence_type: taskForm.recurrence_type,
+      dependency_ids: taskForm.dependency_ids.length ? [...taskForm.dependency_ids] : null,
     }
 
-    if (taskForm.type === 'evening') {
-      taskInput.energy_cost = taskForm.energy_cost
+    if (isProject) {
       taskInput.priority = taskForm.priority
-    }
-
-    if (taskForm.recurrence_type !== 'one_time') {
-      taskInput.recurrence_rule = currentRepeatRule()
-    } else if (taskForm.type === 'evening') {
-      taskInput.is_multi_session = taskForm.is_multi_session
       if (deadlineForm.mode !== 'none') {
         taskInput.deadline_on = deadlineOn()
         taskInput.deadline_is_hard = deadlineForm.is_hard
       }
+    } else {
+      taskInput.type = taskForm.type
+      taskInput.recurrence_type = taskForm.recurrence_type
+      taskInput.project_id = taskForm.project_id
+
+      if (taskForm.type === 'evening') {
+        taskInput.energy_cost = taskForm.energy_cost
+        taskInput.priority = taskForm.priority
+      }
+
+      if (taskForm.recurrence_type !== 'one_time') {
+        taskInput.recurrence_rule = currentRepeatRule()
+      } else if (taskForm.type === 'evening') {
+        taskInput.is_multi_session = taskForm.is_multi_session
+        if (deadlineForm.mode !== 'none') {
+          taskInput.deadline_on = deadlineOn()
+          taskInput.deadline_is_hard = deadlineForm.is_hard
+        }
+      }
     }
 
-    const response = await fetch('/api/v1/tasks', {
+    const response = await fetch(isProject ? '/api/v1/projects' : '/api/v1/tasks', {
       method: 'POST',
       headers: {
         Accept: 'application/json',
@@ -586,24 +786,28 @@ async function saveTask() {
           return
         }
       }
-      throw new Error("Couldn't save this task. Try again.")
+      throw new Error(`Couldn't save this ${isProject ? 'project' : 'task'}. Try again.`)
     }
 
-    tasks.value = [result.data, ...tasks.value.filter((task) => task.id !== result.data.id)]
-    taskForm.title = ''
-    taskForm.description = ''
-    taskForm.type = 'evening'
-    taskForm.energy_cost = 'standard'
-    taskForm.priority = 'standard'
-    taskForm.recurrence_type = 'one_time'
-    taskForm.is_multi_session = false
-    Object.assign(repeatForm, initialRepeatValues())
-    resetDeadlineForm()
-    clientRequestId.value = crypto.randomUUID()
-    saveMessage.value = 'Task saved.'
-    closeAllDetails()
+    const savedProjectId = taskForm.project_id
+    if (isProject) {
+      projects.value = [result.data, ...projects.value.filter((project) => project.id !== result.data.id)]
+      selectedProjectId.value = result.data.id
+      activeView.value = 'projects'
+    } else {
+      tasks.value = [result.data, ...tasks.value.filter((task) => task.id !== result.data.id)]
+      if (savedProjectId !== null) {
+        selectedProjectId.value = savedProjectId
+        activeView.value = 'projects'
+      } else {
+        selectedTaskId.value = null
+        activeView.value = 'tasks'
+      }
+    }
+    resetCaptureForm()
+    clientRequestIds[entryKind.value] = crypto.randomUUID()
   } catch (error) {
-    saveError.value = error.message || "Couldn't save this task. Try again."
+    saveError.value = error.message || `Couldn't save this ${entryKind.value}. Try again.`
   } finally {
     isSaving.value = false
   }
@@ -639,7 +843,7 @@ onMounted(checkServer)
           <img class="hero-flower" src="/sunflower.svg?v=2" alt="" aria-hidden="true" />
         </section>
 
-        <button class="add-task-shortcut" type="button" @click="openTaskForm">
+        <button class="add-task-shortcut" type="button" @click="openTaskForm()">
           <span class="shortcut-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none">
               <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
@@ -663,23 +867,85 @@ onMounted(checkServer)
         </section>
       </template>
 
-      <template v-else>
-        <header class="tasks-heading">
-          <h1>Tasks</h1>
-          <span v-if="!tasksLoading && !tasksError" class="tasks-count">{{ tasks.length }} saved</span>
+      <template v-else-if="activeView === 'tasks'">
+        <template v-if="selectedTask">
+          <header class="task-detail-heading">
+            <button class="project-back" type="button" @click="closeTaskDetails">← {{ taskReturnView === 'projects' ? 'Project' : 'Tasks' }}</button>
+            <h1>{{ selectedTask.title }}</h1>
+          </header>
+          <section class="task-detail" aria-label="Task details">
+            <p v-if="selectedTask.description" class="task-detail-description">{{ selectedTask.description }}</p>
+            <dl class="task-detail-facts">
+              <div><dt>Type</dt><dd>{{ selectedTask.type === 'day' ? 'Day' : 'Evening' }}</dd></div>
+              <div v-if="selectedTask.project_id"><dt>Project</dt><dd>{{ projects.find((project) => project.id === selectedTask.project_id)?.title || 'Project' }}</dd></div>
+              <div v-if="selectedTask.type === 'evening'"><dt>Energy</dt><dd>{{ selectedTask.energy_cost === 'high' ? 'High' : 'Standard' }}</dd></div>
+              <div v-if="selectedTask.type === 'evening'"><dt>Priority</dt><dd>{{ priorityLabel(selectedTask.priority) }}</dd></div>
+              <div><dt>Repeat</dt><dd>{{ repeatLabel(selectedTask.recurrence_type, selectedTask.recurrence_rule) }}</dd></div>
+              <div v-if="selectedTask.is_multi_session"><dt>Sessions</dt><dd>Multi-session</dd></div>
+              <div v-if="selectedTask.deadline_on"><dt>Deadline</dt><dd>{{ formatDeadline(selectedTask.deadline_on) }} · {{ selectedTask.deadline_is_hard ? 'Hard' : 'Soft' }}</dd></div>
+              <div v-if="selectedTask.dependencies?.length"><dt>Dependencies</dt><dd>{{ selectedTask.dependencies.map((dependency) => dependency.title).join(', ') }}</dd></div>
+            </dl>
+          </section>
+        </template>
+        <template v-else>
+          <header class="collection-heading">
+            <div class="collection-title">
+              <h1>Tasks</h1>
+              <span v-if="!tasksLoading && !tasksError" class="collection-count">{{ tasks.length }}</span>
+            </div>
+            <button class="collection-add" type="button" @click="openTaskForm()">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+              <span>Add task</span>
+            </button>
+          </header>
+          <section class="task-list task-list-main" aria-label="Saved tasks">
+            <p v-if="tasksLoading" class="list-message">Loading tasks…</p>
+            <div v-else-if="tasksError" class="list-message" role="alert">
+              <p>{{ tasksError }}</p>
+              <button type="button" @click="loadTasks">Try again</button>
+            </div>
+            <p v-else-if="tasks.length === 0" class="list-message">No tasks saved yet.</p>
+            <ul v-else>
+              <li v-for="task in tasks" :key="task.id">
+                <button class="task-row" type="button" @click="openTaskDetails(task)">
+                  <span class="task-row-copy">
+                    <strong>{{ task.title }}</strong>
+                    <small>
+                      {{ task.type === 'day' ? 'Day' : 'Evening' }}
+                      <template v-if="task.project_id"> · {{ projects.find((project) => project.id === task.project_id)?.title || 'Project' }}</template>
+                      <template v-if="task.deadline_on"> · Due {{ formatDeadline(task.deadline_on) }}</template>
+                      <template v-else-if="task.recurrence_type !== 'one_time'"> · {{ repeatLabel(task.recurrence_type, task.recurrence_rule) }}</template>
+                    </small>
+                  </span>
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 5 7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                </button>
+              </li>
+            </ul>
+          </section>
+        </template>
+      </template>
+
+      <template v-else-if="activeView === 'capture'">
+        <header class="capture-heading">
+          <button class="project-back" type="button" @click="entryKind === 'project' ? showProjects() : showTasks()">← {{ entryKind === 'project' ? 'Projects' : 'Tasks' }}</button>
+          <h1>New {{ entryKind }}</h1>
         </header>
 
-        <section class="task-panel" aria-label="Add a task">
+        <section class="task-panel" :aria-label="entryKind === 'project' ? 'Add a project' : 'Add a task'">
           <form class="task-form" novalidate @submit.prevent="saveTask">
+            <div class="capture-kind" role="group" aria-label="Add">
+              <button type="button" :aria-pressed="entryKind === 'task'" @click="setEntryKind('task')">Task</button>
+              <button type="button" :aria-pressed="entryKind === 'project'" @click="setEntryKind('project')">Project</button>
+            </div>
             <label class="field" :class="{ 'has-error': fieldErrors.title }">
-              <span>What needs doing?</span>
+              <span>{{ entryKind === 'project' ? 'Project name' : 'What needs doing?' }}</span>
               <input ref="taskTitleInput" v-model="taskForm.title" type="text" maxlength="255" required
                 :aria-invalid="Boolean(fieldErrors.title)" :aria-describedby="fieldErrors.title ? 'task-title-error' : undefined"
                 @input="clearFieldError('title')" />
               <span v-if="fieldErrors.title" id="task-title-error" class="field-error">{{ fieldErrors.title }}</span>
             </label>
 
-            <fieldset class="capture-type">
+            <fieldset v-if="entryKind === 'task'" class="capture-type">
               <legend>Task type</legend>
               <div class="choice-grid type-choices" role="radiogroup" aria-label="Task type">
                 <label class="choice-option" :class="{ selected: taskForm.type === 'evening' }">
@@ -707,7 +973,7 @@ onMounted(checkServer)
             <p v-if="saveError" class="form-error" role="alert">{{ saveError }}</p>
             <p v-if="saveMessage" class="form-success" role="status">{{ saveMessage }}</p>
             <button class="primary-button" type="submit" :disabled="isSaving">
-              {{ isSaving ? 'Saving…' : 'Save task' }}
+              {{ isSaving ? 'Saving…' : entryKind === 'project' ? 'Save project' : 'Save task' }}
             </button>
           </form>
 
@@ -718,7 +984,7 @@ onMounted(checkServer)
             </header>
             <div class="options-sheet-body">
               <div class="form-details">
-                <details v-if="taskForm.type === 'evening'" ref="energyDetail" class="form-detail" @toggle="closeOtherDetails">
+                <details v-if="entryKind === 'task' && taskForm.type === 'evening'" ref="energyDetail" class="form-detail" @toggle="closeOtherDetails">
                   <summary>
                     <span>Energy needed</span>
                     <span class="detail-value">{{ taskForm.energy_cost === 'high' ? 'High' : 'Standard' }}</span>
@@ -737,7 +1003,7 @@ onMounted(checkServer)
                   </div>
                 </details>
 
-                <details v-if="taskForm.type === 'evening'" ref="priorityDetail" class="form-detail" :class="{ 'has-error': fieldErrors.priority }" @toggle="closeOtherDetails">
+                <details v-if="entryKind === 'project' || taskForm.type === 'evening'" ref="priorityDetail" class="form-detail" :class="{ 'has-error': fieldErrors.priority }" @toggle="closeOtherDetails">
                   <summary>
                     <span>Priority</span>
                     <span class="detail-value">{{ priorityLabel(taskForm.priority) }}</span>
@@ -753,7 +1019,7 @@ onMounted(checkServer)
                   </div>
                 </details>
 
-                <details ref="repeatDetail" class="form-detail" :class="{ 'has-error': repeatHasError }" @toggle="closeOtherDetails">
+                <details v-if="entryKind === 'task'" ref="repeatDetail" class="form-detail" :class="{ 'has-error': repeatHasError }" @toggle="closeOtherDetails">
                   <summary>
                     <span>Repeat</span>
                     <span class="detail-value">{{ repeatLabel(taskForm.recurrence_type, currentRepeatRule()) }}</span>
@@ -765,14 +1031,15 @@ onMounted(checkServer)
                         <span>One-time</span>
                       </label>
                       <label class="repeat-mode" :class="{ selected: taskForm.recurrence_type === 'schedule' }">
-                        <input v-model="taskForm.recurrence_type" type="radio" name="repeat-type" value="schedule" @change="onRepeatTypeChange" />
+                        <input v-model="taskForm.recurrence_type" type="radio" name="repeat-type" value="schedule" :disabled="taskForm.project_id !== null" @change="onRepeatTypeChange" />
                         <span>Set days</span>
                       </label>
                       <label class="repeat-mode" :class="{ selected: taskForm.recurrence_type === 'count' }">
-                        <input v-model="taskForm.recurrence_type" type="radio" name="repeat-type" value="count" @change="onRepeatTypeChange" />
+                        <input v-model="taskForm.recurrence_type" type="radio" name="repeat-type" value="count" :disabled="taskForm.project_id !== null" @change="onRepeatTypeChange" />
                         <span>Count target</span>
                       </label>
                     </div>
+                    <p v-if="taskForm.project_id !== null" class="field-note">Project steps are one-time.</p>
                     <p v-if="fieldErrors.repeat" class="field-error">{{ fieldErrors.repeat }}</p>
 
                     <div v-if="taskForm.recurrence_type === 'schedule'" class="repeat-settings">
@@ -855,7 +1122,7 @@ onMounted(checkServer)
                   </div>
                 </details>
 
-                <details v-if="taskForm.type === 'evening' && taskForm.recurrence_type === 'one_time'" ref="multiSessionDetail" class="form-detail" @toggle="closeOtherDetails">
+                <details v-if="entryKind === 'task' && taskForm.type === 'evening' && taskForm.recurrence_type === 'one_time'" ref="multiSessionDetail" class="form-detail" @toggle="closeOtherDetails">
                   <summary>
                     <span>Sessions</span>
                     <span class="detail-value">{{ taskForm.is_multi_session ? 'Multiple' : 'One' }}</span>
@@ -868,7 +1135,7 @@ onMounted(checkServer)
                   </div>
                 </details>
 
-                <details v-if="taskForm.type === 'evening' && taskForm.recurrence_type === 'one_time'" ref="deadlineDetail" class="form-detail" :class="{ 'has-error': deadlineHasError }" @toggle="closeOtherDetails">
+                <details v-if="entryKind === 'project' || (taskForm.type === 'evening' && taskForm.recurrence_type === 'one_time')" ref="deadlineDetail" class="form-detail" :class="{ 'has-error': deadlineHasError }" @toggle="closeOtherDetails">
                   <summary>
                     <span>Deadline</span>
                     <span class="detail-value">{{ deadlineLabel() }}</span>
@@ -936,6 +1203,49 @@ onMounted(checkServer)
                   </div>
                 </details>
 
+                <details v-if="entryKind === 'task'" ref="projectDetail" class="form-detail" :class="{ 'has-error': fieldErrors.project }" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Project</span>
+                    <span class="detail-value">{{ projects.find((project) => project.id === taskForm.project_id)?.title || 'None' }}</span>
+                  </summary>
+                  <div class="detail-content">
+                    <p v-if="taskForm.recurrence_type !== 'one_time'" class="field-note">Recurring tasks cannot belong to a project.</p>
+                    <p v-else-if="projectsLoading" class="dependency-message">Loading projects…</p>
+                    <p v-else-if="projectsError" class="dependency-message">Projects couldn't be loaded.</p>
+                    <p v-else-if="projects.length === 0" class="dependency-message">Create a project first.</p>
+                    <PlannerSelect v-else v-model="taskForm.project_id" :options="projectOptions" label="Project"
+                      :invalid="Boolean(fieldErrors.project)" @change="clearFieldError('project')" />
+                    <p v-if="fieldErrors.project" class="field-error">{{ fieldErrors.project }}</p>
+                  </div>
+                </details>
+
+                <details ref="dependenciesDetail" class="form-detail" :class="{ 'has-error': fieldErrors.dependencies }" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Dependencies</span>
+                    <span class="detail-value">{{ taskForm.dependency_ids.length || 'None' }}</span>
+                  </summary>
+                  <div class="detail-content dependency-content">
+                    <p v-if="tasksLoading || projectsLoading" class="dependency-message">Loading…</p>
+                    <p v-else-if="tasksError || projectsError" class="dependency-message">Saved items couldn't be loaded.</p>
+                    <p v-else-if="dependencyChoices.length === 0" class="dependency-message">Save another task or project first.</p>
+                    <template v-else>
+                      <label v-if="dependencyChoices.length > 6" class="dependency-search">
+                        <span class="visually-hidden">Find a dependency</span>
+                        <input ref="dependencySearchInput" v-model="dependencySearch" type="search" placeholder="Find a dependency" />
+                      </label>
+                      <div class="dependency-list" role="group" aria-label="Dependencies">
+                        <label v-for="item in availableDependencies" :key="item.id" class="dependency-option" :class="{ selected: taskForm.dependency_ids.includes(item.id) }">
+                          <input v-model="taskForm.dependency_ids" type="checkbox" :value="item.id" @change="clearFieldError('dependencies')" />
+                          <span>{{ item.title }}</span>
+                          <small>{{ item.item_type === 'project' ? 'Project' : 'Task' }}</small>
+                        </label>
+                        <p v-if="availableDependencies.length === 0" class="dependency-message">No matches.</p>
+                      </div>
+                    </template>
+                    <p v-if="fieldErrors.dependencies" class="field-error">{{ fieldErrors.dependencies }}</p>
+                  </div>
+                </details>
+
                 <details ref="contextDetail" class="form-detail" @toggle="closeOtherDetails">
                   <summary>
                     <span>Description</span>
@@ -956,33 +1266,115 @@ onMounted(checkServer)
           </dialog>
         </section>
 
-        <section class="task-list" aria-labelledby="saved-tasks-title">
-          <div class="list-heading">
-            <h2 id="saved-tasks-title">Saved tasks</h2>
-          </div>
-          <p v-if="tasksLoading" class="list-message">Loading tasks…</p>
-          <div v-else-if="tasksError" class="list-message" role="alert">
-            <p>{{ tasksError }}</p>
-            <button type="button" @click="loadTasks">Try again</button>
-          </div>
-          <p v-else-if="tasks.length === 0" class="list-message">No tasks saved yet.</p>
-          <ul v-else>
-            <li v-for="task in tasks" :key="task.id" class="task-card">
-              <div>
-                <h3>{{ task.title }}</h3>
-                <p v-if="task.description" class="task-description">{{ task.description }}</p>
+      </template>
+
+      <template v-else>
+        <header class="projects-heading">
+          <button v-if="selectedProject" class="project-back" type="button" @click="selectedProjectId = null">← Projects</button>
+          <h1>{{ selectedProject?.title || 'Projects' }}</h1>
+          <button v-if="!selectedProject" class="collection-add" type="button" @click="openProjectForm">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+            <span>New project</span>
+          </button>
+        </header>
+
+        <template v-if="selectedProject">
+          <section v-if="selectedProject.description || selectedProject.priority !== 'standard' || selectedProject.deadline_on || selectedProject.dependencies?.length" class="project-overview">
+            <p v-if="selectedProject.description" class="task-description">{{ selectedProject.description }}</p>
+            <div class="task-meta">
+              <span v-if="selectedProject.priority !== 'standard'" :class="selectedProject.priority === 'high' ? 'tag-priority-high' : 'tag-priority-low'">{{ priorityLabel(selectedProject.priority) }} priority</span>
+              <span v-if="selectedProject.deadline_on" :class="selectedProject.deadline_is_hard ? 'tag-deadline-hard' : 'tag-deadline-soft'">{{ selectedProject.deadline_is_hard ? 'Hard' : 'Soft' }} deadline · {{ formatDeadline(selectedProject.deadline_on) }}</span>
+            </div>
+            <p v-if="selectedProject.dependencies?.length" class="task-dependencies">
+              {{ selectedProject.dependencies_complete ? 'Dependencies done' : 'Waiting for' }}: {{ selectedProject.dependencies.map((dependency) => dependency.title).join(', ') }}
+            </p>
+          </section>
+
+          <button class="add-task-shortcut" type="button" @click="openProjectTaskPicker">
+            <span class="shortcut-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" /></svg>
+            </span>
+            <span>Add task to project</span>
+            <svg class="shortcut-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+          </button>
+
+          <dialog ref="projectTaskDialog" class="options-sheet project-task-picker" aria-labelledby="project-task-picker-title" @click.self="projectTaskDialog?.close()">
+            <header class="options-sheet-header project-task-picker-header">
+              <h2 id="project-task-picker-title">Add task to project</h2>
+              <button class="project-task-picker-close" type="button" aria-label="Close" @click="projectTaskDialog?.close()">×</button>
+            </header>
+            <div class="options-sheet-body project-task-picker-body">
+              <button class="project-task-create" type="button" :disabled="projectTaskSavingId !== null" @click="createTaskInProject">
+                <span>New task</span>
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              </button>
+              <h3 class="project-task-list-title">Existing tasks</h3>
+              <label v-if="eligibleProjectTasks.length > 6 || projectTaskSearch" class="project-task-search">
+                <span class="visually-hidden">Search tasks</span>
+                <input v-model="projectTaskSearch" type="search" placeholder="Search tasks" />
+              </label>
+              <p v-if="tasksLoading" class="project-task-empty">Loading tasks…</p>
+              <div v-else-if="tasksError" class="project-task-empty" role="alert">
+                <p>{{ tasksError }}</p>
+                <button type="button" @click="loadTasks">Try again</button>
               </div>
-              <p class="task-meta">
-                <span :class="task.type === 'day' ? 'tag-day' : 'tag-evening'">{{ task.type === 'day' ? 'Day' : 'Evening' }}</span>
-                <span v-if="task.type === 'evening' && task.energy_cost" class="tag-energy">{{ task.energy_cost === 'high' ? 'High' : 'Standard' }} energy</span>
-                <span v-if="task.type === 'evening' && task.priority && task.priority !== 'standard'" :class="task.priority === 'high' ? 'tag-priority-high' : 'tag-priority-low'">{{ priorityLabel(task.priority) }} priority</span>
-                <span v-if="task.recurrence_type !== 'one_time'" class="tag-repeat">{{ repeatLabel(task.recurrence_type, task.recurrence_rule) }}</span>
-                <span v-if="task.is_multi_session" class="tag-multi-session">Multi-session</span>
-                <span v-if="task.deadline_on" :class="task.deadline_is_hard ? 'tag-deadline-hard' : 'tag-deadline-soft'">{{ task.deadline_is_hard ? 'Hard' : 'Soft' }} deadline · {{ formatDeadline(task.deadline_on) }}</span>
-              </p>
-            </li>
-          </ul>
-        </section>
+              <p v-else-if="eligibleProjectTasks.length === 0" class="project-task-empty">No unassigned one-time tasks.</p>
+              <p v-else-if="filteredProjectTasks.length === 0" class="project-task-empty">No matches.</p>
+              <ul v-else class="project-task-choices">
+                <li v-for="task in filteredProjectTasks" :key="task.id">
+                  <button type="button" :disabled="projectTaskSavingId !== null" @click="addExistingTaskToProject(task)">
+                    <span class="project-task-choice-label">
+                      <strong>{{ task.title }}</strong>
+                      <small>{{ task.type === 'day' ? 'Day' : 'Evening' }}<template v-if="task.is_multi_session"> · Multi-session</template></small>
+                    </span>
+                    <span class="project-task-choice-action">{{ projectTaskSavingId === task.id ? 'Adding…' : 'Add' }}</span>
+                  </button>
+                </li>
+              </ul>
+              <p v-if="projectTaskError" class="form-error" role="alert">{{ projectTaskError }}</p>
+            </div>
+          </dialog>
+
+          <section class="task-list" aria-labelledby="project-tasks-title">
+            <div class="list-heading"><h2 id="project-tasks-title">Tasks</h2></div>
+            <p v-if="tasksLoading" class="list-message">Loading tasks…</p>
+            <p v-else-if="tasksError" class="list-message">Tasks couldn't be loaded.</p>
+            <p v-else-if="projectSteps.length === 0" class="list-message">No tasks in this project yet.</p>
+            <ul v-else>
+              <li v-for="task in projectSteps" :key="task.id" class="task-card">
+                <button class="task-card-cover" type="button" :aria-label="`View ${task.title}`" @click="openTaskDetails(task, 'projects')"></button>
+                <div>
+                  <h3>{{ task.title }}</h3>
+                  <p v-if="task.description" class="task-description">{{ task.description }}</p>
+                  <p v-if="task.dependencies?.length" class="task-dependencies">{{ task.dependencies_complete ? 'Dependencies done' : 'Waiting for' }}: {{ task.dependencies.map((dependency) => dependency.title).join(', ') }}</p>
+                </div>
+                <p class="task-meta">
+                  <span :class="task.type === 'day' ? 'tag-day' : 'tag-evening'">{{ task.type === 'day' ? 'Day' : 'Evening' }}</span>
+                  <span v-if="task.is_multi_session" class="tag-multi-session">Multi-session</span>
+                  <span v-if="task.deadline_on" :class="task.deadline_is_hard ? 'tag-deadline-hard' : 'tag-deadline-soft'">{{ formatDeadline(task.deadline_on) }}</span>
+                </p>
+              </li>
+            </ul>
+          </section>
+        </template>
+
+        <template v-else>
+          <p v-if="projectsLoading" class="list-message">Loading projects…</p>
+          <div v-else-if="projectsError" class="list-message" role="alert">
+            <p>{{ projectsError }}</p>
+            <button type="button" @click="loadProjects">Try again</button>
+          </div>
+          <p v-else-if="projects.length === 0" class="list-message">No projects saved yet.</p>
+          <div v-else class="project-grid">
+            <button v-for="project in projects" :key="project.id" class="project-card" type="button" @click="selectedProjectId = project.id">
+              <span class="project-card-title">{{ project.title }}</span>
+              <span class="project-card-meta">
+                {{ tasks.filter((task) => task.project_id === project.id).length }} {{ tasks.filter((task) => task.project_id === project.id).length === 1 ? 'task' : 'tasks' }}
+                <span v-if="project.deadline_on"> · Due {{ formatDeadline(project.deadline_on) }}</span>
+              </span>
+            </button>
+          </div>
+        </template>
       </template>
     </main>
 
@@ -1000,6 +1392,13 @@ onMounted(checkServer)
           <path d="m3 6 1.2 1.2L6 5.2M3 12l1.2 1.2L6 11.2M3 18l1.2 1.2L6 17.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
         <span>Tasks</span>
+      </button>
+      <button type="button" :aria-pressed="activeView === 'projects'" @click="showProjects">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-10Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+          <path d="M3 10h18" stroke="currentColor" stroke-width="1.8" />
+        </svg>
+        <span>Projects</span>
       </button>
     </nav>
   </div>
