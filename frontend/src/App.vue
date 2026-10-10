@@ -21,6 +21,23 @@ const taskFilterTrigger = ref(null)
 const taskFilterDialog = ref(null)
 const taskFiltersOpen = ref(false)
 const todayDate = ref(localDate(new Date()))
+const todayLabel = computed(() => new Intl.DateTimeFormat(undefined, {
+  weekday: 'long',
+  month: 'long',
+  day: 'numeric',
+}).format(new Date(`${todayDate.value}T12:00:00`)))
+const todayScheduledTasks = ref([])
+const todayTasksLoading = ref(false)
+const todayTasksError = ref('')
+const todayDoneCount = computed(() => todayScheduledTasks.value.filter(isTodayTaskDone).length)
+const todayTaskGroups = computed(() => [
+  { type: 'day', label: 'Day' },
+  { type: 'evening', label: 'Evening' },
+].map((group) => ({
+  ...group,
+  items: todayScheduledTasks.value.filter((item) => item.task.type === group.type)
+    .sort((first, second) => Number(isTodayTaskDone(first)) - Number(isTodayTaskDone(second))),
+})).filter((group) => group.items.length))
 const tomorrowDate = computed(() => {
   const date = new Date(`${todayDate.value}T12:00:00`)
   date.setDate(date.getDate() + 1)
@@ -53,7 +70,7 @@ const tomorrowSetupSummary = computed(() => [
   `${savedTomorrowSetup.value.energy_level[0].toUpperCase()}${savedTomorrowSetup.value.energy_level.slice(1)} energy`,
   savedTomorrowSetup.value.day_off ? 'Day Off' : null,
   savedTomorrowSetup.value.dinner_enabled ? `Dinner${savedTomorrowSetup.value.dinner_dish ? ` · ${savedTomorrowSetup.value.dinner_dish}` : ''}` : null,
-  savedTomorrowManualTaskIds.value.length ? `${savedTomorrowManualTaskIds.value.length} ${savedTomorrowManualTaskIds.value.length === 1 ? 'task' : 'tasks'}` : null,
+  tomorrowScheduledTasks.value.length ? `${tomorrowScheduledTasks.value.length} ${tomorrowScheduledTasks.value.length === 1 ? 'task' : 'tasks'}` : null,
 ].filter(Boolean).join(' · '))
 const tomorrowSelectedTasks = computed(() => tomorrowManualTaskIds.value.map((id) =>
   tasks.value.find((task) => task.id === id) || tomorrowScheduledTasks.value.find((item) => item.task.id === id)?.task,
@@ -368,6 +385,45 @@ function refreshToday() {
   todayDate.value = localDate(new Date())
 }
 
+function isTodayTaskDone(item) {
+  return item.status === 'completed' || item.task.lifecycle_state === 'completed'
+}
+
+function todayLibraryTask(item) {
+  return tasks.value.find((task) => task.id === item.task.id)
+}
+
+let latestTodayTasksLoad = 0
+
+async function loadTodayTasks() {
+  const loadId = ++latestTodayTasksLoad
+  const planDate = todayDate.value
+  todayTasksLoading.value = true
+  todayTasksError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/planning-days/${planDate}/tasks`, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
+    if (!response.ok) throw new Error('Could not load today')
+    const result = await response.json()
+    if (loadId === latestTodayTasksLoad && planDate === todayDate.value) todayScheduledTasks.value = result.data
+  } catch {
+    if (loadId === latestTodayTasksLoad) todayTasksError.value = "Couldn't load today's tasks. Try again."
+  } finally {
+    if (loadId === latestTodayTasksLoad) todayTasksLoading.value = false
+  }
+}
+
+function showToday() {
+  activeView.value = 'today'
+  selectedTaskId.value = null
+  loadTodayTasks()
+  loadTasks()
+  loadProjects()
+}
+
 let latestTomorrowSetupLoad = 0
 
 async function loadTomorrowSetup() {
@@ -546,6 +602,7 @@ async function saveTomorrowSetup() {
 }
 
 watch(tomorrowDate, loadTomorrowSetup)
+watch(todayDate, loadTodayTasks)
 
 async function resetTestDay() {
   if (resetBusy.value) return
@@ -561,6 +618,7 @@ async function resetTestDay() {
     if (!response.ok) throw new Error('Reset failed. Try again.')
     const result = await response.json()
 
+    todayScheduledTasks.value = result.scheduled_tasks
     await Promise.all([loadTomorrowSetup(), loadTasks()])
     resetFeedback.value = `Tomorrow cleared. ${result.scheduled_tasks.length} tasks set for today.`
   } catch {
@@ -1136,6 +1194,7 @@ async function submitTaskCompletion(type, task = selectedTask.value) {
       completionCount.value = result.completion_count
     }
     tasks.value = tasks.value.map((item) => item.id === task.id ? result.data : item)
+    await loadTodayTasks()
     completionRequest.value = null
     actionDialog.value?.close()
     pendingAction.value = null
@@ -1147,7 +1206,7 @@ async function submitTaskCompletion(type, task = selectedTask.value) {
         activeView.value = taskReturnView.value
       }
       await loadTasks()
-      if (task.project_id !== null) await loadProjects()
+      if (result.data.project_id !== null) await loadProjects()
       if (result.project_completed) selectedProjectId.value = null
     }
   } catch (error) {
@@ -1433,7 +1492,7 @@ async function deleteTask() {
       selectedTaskId.value = null
       activeView.value = taskReturnView.value
     }
-    await Promise.all([loadProjects(), loadTomorrowSetup()])
+    await Promise.all([loadProjects(), loadTomorrowSetup(), loadTodayTasks()])
     actionDialog.value?.close()
     pendingAction.value = null
     if (result.project_empty) await offerEmptyProjectDeletion(result.project_id)
@@ -1468,7 +1527,7 @@ async function deleteProject(taskAction) {
     }
     actionDialog.value?.close()
     pendingAction.value = null
-    await Promise.all([loadTasks(), loadTomorrowSetup()])
+    await Promise.all([loadTasks(), loadTomorrowSetup(), loadTodayTasks()])
   } catch (error) {
     actionError.value = error.message || "Couldn't delete this project. Try again."
   } finally {
@@ -1769,7 +1828,6 @@ onBeforeUnmount(() => {
                     <span>Dinner</span>
                     <span class="task-toggle-track" aria-hidden="true"><span class="task-toggle-thumb"></span></span>
                   </button>
-                  <p>Plan groceries and cooking.</p>
                   <label v-if="tomorrowSetup.dinner_enabled" class="field tomorrow-dish-field" :class="{ 'has-error': tomorrowDishError }">
                     <span>Dish</span>
                     <input ref="tomorrowSetupDishInput" v-model="tomorrowSetup.dinner_dish" type="text" maxlength="255"
@@ -1782,9 +1840,13 @@ onBeforeUnmount(() => {
                 <section class="tomorrow-tasks-setting" aria-labelledby="tomorrow-tasks-title">
                   <div class="tomorrow-tasks-heading">
                     <h3 id="tomorrow-tasks-title">Tasks for tomorrow</h3>
-                    <span>{{ tomorrowManualTaskIds.length || 'None' }}</span>
+                    <span>{{ tomorrowManualTaskIds.length + (tomorrowSetup.dinner_enabled ? 2 : 0) || 'None' }}</span>
                   </div>
-                  <ul v-if="tomorrowSelectedTasks.length" class="tomorrow-selected-tasks">
+                  <ul v-if="tomorrowSetup.dinner_enabled || tomorrowSelectedTasks.length" class="tomorrow-selected-tasks">
+                    <template v-if="tomorrowSetup.dinner_enabled">
+                      <li class="tomorrow-auto-task"><span>Grocery shopping</span><small>Day</small></li>
+                      <li class="tomorrow-auto-task"><span>Dinner</span><small>Evening</small></li>
+                    </template>
                     <li v-for="task in tomorrowSelectedTasks" :key="task.id">
                       <span>{{ task.title }}</span>
                       <button type="button" :aria-label="`Remove ${task.title} from tomorrow`" @click="removeTaskFromTomorrow(task.id)">×</button>
@@ -1856,11 +1918,52 @@ onBeforeUnmount(() => {
         </section>
       </template>
 
+      <template v-else-if="activeView === 'today'">
+        <header class="today-heading">
+          <p class="section-kicker">{{ todayLabel }}</p>
+          <h1>Today<span class="title-dot">.</span></h1>
+          <p v-if="!todayTasksLoading && !todayTasksError && todayScheduledTasks.length" class="today-progress-copy">
+            {{ todayDoneCount }} of {{ todayScheduledTasks.length }} done
+          </p>
+        </header>
+
+        <div v-if="todayTasksLoading" class="today-state">Loading today’s tasks…</div>
+        <div v-else-if="todayTasksError" class="today-state" role="alert">
+          <p>{{ todayTasksError }}</p>
+          <button type="button" @click="loadTodayTasks">Try again</button>
+        </div>
+        <div v-else-if="!todayScheduledTasks.length" class="today-state">Nothing planned for today.</div>
+        <template v-else>
+          <div class="today-progress-track" role="progressbar" :aria-valuenow="todayDoneCount" :aria-valuemax="todayScheduledTasks.length" aria-valuemin="0" aria-label="Today's tasks done">
+            <span :style="{ width: `${todayDoneCount / todayScheduledTasks.length * 100}%` }"></span>
+          </div>
+          <section v-for="group in todayTaskGroups" :key="group.type" class="today-group" :aria-label="`${group.label} tasks`">
+            <div class="today-group-heading"><h2>{{ group.label }}</h2><span>{{ group.items.length }}</span></div>
+            <ul class="today-task-list">
+              <li v-for="item in group.items" :key="item.id" :class="{ 'is-done': isTodayTaskDone(item) }">
+                <div class="today-task-copy">
+                  <button v-if="todayLibraryTask(item)" type="button" @click="openTaskDetails(todayLibraryTask(item), 'today')">{{ item.task.title }}</button>
+                  <strong v-else>{{ item.task.title }}</strong>
+                  <span v-if="isTodayTaskDone(item)" class="today-done-label">Done</span>
+                </div>
+                <button v-if="item.task.lifecycle_state === 'active'" class="today-finish-button" :class="{ 'is-repeat': isTodayTaskDone(item) }"
+                  type="button" :disabled="completionBusy || actionBusy"
+                  :aria-label="`${isTodayTaskDone(item) ? 'Finish again' : 'Finish'}: ${item.task.title}`"
+                  @click="openQuickCompletion(todayLibraryTask(item) || item.task)">
+                  <svg v-if="isTodayTaskDone(item)" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+                  <svg v-else viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4.5 12 5 5L19.5 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                </button>
+              </li>
+            </ul>
+          </section>
+        </template>
+      </template>
+
       <template v-else-if="activeView === 'tasks'">
         <template v-if="selectedTask">
           <header class="task-detail-heading">
             <div class="task-detail-actions">
-              <button class="project-back" type="button" @click="closeTaskDetails">← {{ taskReturnView === 'projects' ? 'Project' : 'Tasks' }}</button>
+              <button class="project-back" type="button" @click="closeTaskDetails">← {{ taskReturnView === 'projects' ? 'Project' : taskReturnView === 'today' ? 'Today' : 'Tasks' }}</button>
               <button v-if="selectedTask.lifecycle_state === 'active'" class="task-edit-button" type="button" @click="openTaskEdit(selectedTask)">Edit</button>
             </div>
             <div class="task-detail-title">
@@ -2568,10 +2671,10 @@ onBeforeUnmount(() => {
     <dialog ref="actionDialog" class="options-sheet action-sheet" aria-labelledby="action-sheet-title" @click.self="closeActionDialog" @cancel="actionBusy && $event.preventDefault()">
       <header class="options-sheet-header">
         <h2 id="action-sheet-title">{{ pendingAction?.kind === 'quick-completion' ? 'Finish task' : pendingAction?.kind === 'repeat-completion' ? 'Finish again today?' : pendingAction?.kind === 'delete-task' ? 'Delete task?' : pendingAction?.kind === 'empty-project' ? 'Delete empty project?' : 'Delete project?' }}</h2>
+        <p v-if="pendingAction?.kind === 'quick-completion'" class="action-task-subtitle">{{ pendingAction.task.title }}</p>
       </header>
       <div class="options-sheet-body action-sheet-body">
-        <p v-if="pendingAction?.kind === 'quick-completion'">“{{ pendingAction.task.title }}”</p>
-        <p v-else-if="pendingAction?.kind === 'repeat-completion'">“{{ pendingAction.task.title }}” already has {{ pendingAction.todayCount }} {{ pendingAction.todayCount === 1 ? 'completion' : 'completions' }} today. Save another?</p>
+        <p v-if="pendingAction?.kind === 'repeat-completion'">“{{ pendingAction.task.title }}” already has {{ pendingAction.todayCount }} {{ pendingAction.todayCount === 1 ? 'completion' : 'completions' }} today. Save another?</p>
         <p v-else-if="pendingAction?.kind === 'delete-task'">Delete “{{ pendingAction.task.title }}” permanently?</p>
         <p v-else-if="pendingAction?.kind === 'empty-project'">“{{ pendingAction.project.title }}” has no tasks left. Delete it too?</p>
         <p v-else-if="pendingAction?.kind === 'delete-empty-project'">Delete “{{ pendingAction.project.title }}” permanently?</p>
@@ -2616,6 +2719,13 @@ onBeforeUnmount(() => {
     </Transition>
 
     <nav class="main-nav" aria-label="Main navigation">
+      <button type="button" :aria-pressed="activeView === 'today' || (activeView === 'tasks' && Boolean(selectedTask) && taskReturnView === 'today')" @click="showToday">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M4 5.5h16v14H4zM8 3v5m8-5v5M4 10h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+          <circle cx="12" cy="14.5" r="2" fill="currentColor" />
+        </svg>
+        <span>Today</span>
+      </button>
       <button type="button" :aria-pressed="activeView === 'tomorrow'" @click="activeView = 'tomorrow'">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.8" />
@@ -2623,7 +2733,7 @@ onBeforeUnmount(() => {
         </svg>
         <span>Tomorrow</span>
       </button>
-      <button type="button" :aria-pressed="activeView === 'tasks'" @click="showTasks">
+      <button type="button" :aria-pressed="activeView === 'tasks' && !(selectedTask && taskReturnView === 'today')" @click="showTasks">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M8 6h12M8 12h12M8 18h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
           <path d="m3 6 1.2 1.2L6 5.2M3 12l1.2 1.2L6 11.2M3 18l1.2 1.2L6 17.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />

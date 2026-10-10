@@ -11,10 +11,16 @@ use App\Models\ScheduledTask;
 use App\Models\Task;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class PlanningDayInputController extends Controller
 {
+    private const DinnerTasks = [
+        ['source' => 'dinner_groceries', 'title' => 'Grocery shopping', 'type' => 'day'],
+        ['source' => 'dinner_cooking', 'title' => 'Dinner', 'type' => 'evening'],
+    ];
+
     public function show(string $date): PlanningDayInputResource
     {
         $this->validateDate($date);
@@ -93,10 +99,65 @@ class PlanningDayInputController extends Controller
                 }
             }
 
+            $this->syncDinnerTasks($date, $input->dinner_enabled);
+
             return $input;
         });
 
         return $this->resourceWithScheduledTasks($input, $date);
+    }
+
+    private function syncDinnerTasks(string $date, bool $dinnerEnabled): void
+    {
+        foreach (self::DinnerTasks as $definition) {
+            $assignment = ScheduledTask::query()
+                ->where('plan_date', $date)
+                ->where('source', $definition['source'])
+                ->first();
+
+            if ($dinnerEnabled) {
+                if ($assignment !== null) {
+                    continue;
+                }
+
+                $task = Task::query()->create([
+                    'client_request_id' => (string) Str::uuid(),
+                    'title' => $definition['title'],
+                    'source' => $definition['source'],
+                    'item_type' => 'task',
+                    'type' => $definition['type'],
+                    'priority' => $definition['type'] === 'evening' ? 'standard' : null,
+                    'energy_cost' => $definition['type'] === 'evening' ? 'standard' : null,
+                    'recurrence_type' => 'one_time',
+                    'lifecycle_state' => 'active',
+                    'revision' => 1,
+                ]);
+
+                ScheduledTask::query()->create([
+                    'task_id' => $task->id,
+                    'plan_date' => $date,
+                    'status' => 'planned',
+                    'source' => $definition['source'],
+                ]);
+
+                continue;
+            }
+
+            if ($assignment === null) {
+                continue;
+            }
+
+            $assignment->delete();
+
+            if (! ScheduledTask::query()->where('task_id', $assignment->task_id)->exists()) {
+                Task::query()
+                    ->whereKey($assignment->task_id)
+                    ->where('source', $definition['source'])
+                    ->where('lifecycle_state', 'active')
+                    ->whereDoesntHave('completions')
+                    ->delete();
+            }
+        }
     }
 
     private function resourceWithScheduledTasks(PlanningDayInput $input, string $date): PlanningDayInputResource

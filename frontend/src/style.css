@@ -512,6 +512,17 @@ textarea:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.tomorrow-selected-tasks .tomorrow-auto-task {
+  background: #fff6d9;
+}
+
+.tomorrow-auto-task small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .tomorrow-selected-tasks button {
   flex: 0 0 27px;
   width: 27px;
@@ -658,6 +669,210 @@ textarea:focus-visible {
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
+}
+
+.today-heading {
+  position: relative;
+  overflow: hidden;
+  padding: 28px 30px;
+  border-radius: 28px;
+  background: linear-gradient(125deg, #ffcf2e, #ffe47d);
+  box-shadow: var(--shadow);
+}
+
+.today-heading::after {
+  position: absolute;
+  top: -90px;
+  right: -60px;
+  width: 230px;
+  height: 230px;
+  border: 12px solid rgba(7, 93, 73, 0.1);
+  border-radius: 50%;
+  content: "";
+}
+
+.today-heading .section-kicker {
+  color: var(--green-deep);
+}
+
+.today-heading h1 {
+  position: relative;
+  margin: 10px 0 0;
+  font-size: clamp(44px, 9vw, 62px);
+  font-weight: 800;
+  letter-spacing: -0.075em;
+  line-height: 1;
+}
+
+.today-heading .title-dot {
+  color: var(--green);
+}
+
+.today-progress-copy {
+  margin: 16px 0 0;
+  color: var(--green-deep);
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.today-progress-track {
+  height: 8px;
+  overflow: hidden;
+  margin: 20px 2px 31px;
+  border-radius: 999px;
+  background: #d9e9df;
+}
+
+.today-progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width 240ms ease;
+}
+
+.today-group {
+  margin-top: 24px;
+}
+
+.today-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 7px;
+}
+
+.today-group-heading h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.055em;
+}
+
+.today-group-heading span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.today-task-list {
+  display: grid;
+  gap: 10px;
+  margin: 13px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.today-task-list li {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 76px;
+  padding: 15px 17px 15px 20px;
+  border: 1px solid var(--line);
+  border-radius: 21px;
+  background: var(--surface);
+  box-shadow: 0 10px 24px rgba(19, 73, 58, 0.045);
+}
+
+.today-task-list li.is-done {
+  background: #f0f5f2;
+  box-shadow: none;
+}
+
+.today-task-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.today-task-copy button,
+.today-task-copy strong {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 750;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.today-task-copy button {
+  cursor: pointer;
+}
+
+.today-task-copy button:hover {
+  color: var(--green-deep);
+  text-decoration: underline;
+}
+
+.today-done-label {
+  color: var(--green-deep);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.today-finish-button {
+  display: grid;
+  flex: 0 0 39px;
+  place-items: center;
+  width: 39px;
+  height: 39px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f9fcfa;
+  color: var(--green-deep);
+  cursor: pointer;
+}
+
+.today-finish-button.is-repeat {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.today-finish-button:hover {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.today-finish-button:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.today-finish-button svg {
+  width: 20px;
+  height: 20px;
+}
+
+.today-state {
+  margin-top: 22px;
+  padding: 25px 26px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.today-state p {
+  margin: 0 0 8px;
+}
+
+.today-state button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--green-deep);
+  cursor: pointer;
+  font-weight: 750;
 }
 
 .empty-plan-mark {
@@ -1021,6 +1236,15 @@ textarea:focus-visible {
   color: var(--muted);
   font-size: 15px;
   line-height: 1.5;
+}
+
+.options-sheet-header .action-task-subtitle {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .action-sheet-buttons {

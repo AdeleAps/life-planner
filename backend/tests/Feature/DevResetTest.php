@@ -30,6 +30,8 @@ class DevResetTest extends TestCase
         ScheduledTask::factory()->create(['task_id' => $ownTask->id, 'plan_date' => $tomorrow]);
         $oldSample = Task::factory()->create(['source' => 'test_reset']);
         ScheduledTask::factory()->create(['task_id' => $oldSample->id, 'plan_date' => $today, 'source' => 'test_reset']);
+        $dinnerTask = Task::factory()->create(['source' => 'dinner_groceries', 'title' => 'Grocery shopping', 'type' => 'day']);
+        ScheduledTask::factory()->create(['task_id' => $dinnerTask->id, 'plan_date' => $tomorrow, 'source' => 'dinner_groceries']);
 
         $this->postJson('/api/v1/dev/reset')->assertOk()
             ->assertJsonPath('today', $today)
@@ -38,6 +40,7 @@ class DevResetTest extends TestCase
 
         $this->assertDatabaseMissing('planning_day_inputs', ['plan_date' => $tomorrow]);
         $this->assertDatabaseMissing('tasks', ['id' => $oldSample->id]);
+        $this->assertDatabaseMissing('tasks', ['id' => $dinnerTask->id]);
         $this->assertDatabaseHas('tasks', ['id' => $ownTask->id]);
         $this->assertDatabaseCount('scheduled_tasks', 3);
         $this->assertDatabaseHas('scheduled_tasks', ['plan_date' => $today, 'status' => 'planned']);

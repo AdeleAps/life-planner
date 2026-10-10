@@ -6,8 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreTaskCompletionRequest;
 use App\Http\Resources\TaskCompletionResource;
 use App\Http\Resources\TaskResource;
+use App\Models\ScheduledTask;
 use App\Models\Task;
 use App\Models\TaskCompletion;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
@@ -71,6 +73,12 @@ class TaskCompletionController extends Controller
 
             $task->revision++;
             $task->save();
+
+            ScheduledTask::query()
+                ->where('task_id', $task->id)
+                ->where('plan_date', CarbonImmutable::now('Europe/Riga')->toDateString())
+                ->where('status', 'planned')
+                ->update(['status' => 'completed']);
 
             $projectCompleted = false;
 

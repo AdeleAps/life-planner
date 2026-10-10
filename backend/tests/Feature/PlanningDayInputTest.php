@@ -117,6 +117,51 @@ class PlanningDayInputTest extends TestCase
         $this->assertDatabaseCount('planning_day_inputs', 0);
     }
 
+    public function test_dinner_creates_two_default_tasks_once_and_removes_them_when_switched_off(): void
+    {
+        $url = '/api/v1/planning-days/2026-10-11/setup';
+        $manualTask = Task::factory()->create(['title' => 'Keep me tomorrow']);
+        $settings = [
+            'energy_level' => 'standard',
+            'day_off' => false,
+            'dinner_enabled' => true,
+            'dinner_dish' => 'Pasta',
+            'manual_task_ids' => [$manualTask->id],
+        ];
+
+        $this->putJson($url, $settings)->assertCreated()->assertJsonCount(3, 'scheduled_tasks');
+        $this->assertDatabaseHas('tasks', [
+            'title' => 'Grocery shopping',
+            'source' => 'dinner_groceries',
+            'type' => 'day',
+            'priority' => null,
+            'energy_cost' => null,
+            'recurrence_type' => 'one_time',
+        ]);
+        $this->assertDatabaseHas('tasks', [
+            'title' => 'Dinner',
+            'source' => 'dinner_cooking',
+            'type' => 'evening',
+            'priority' => 'standard',
+            'energy_cost' => 'standard',
+            'recurrence_type' => 'one_time',
+        ]);
+        $this->assertDatabaseHas('scheduled_tasks', ['plan_date' => '2026-10-11', 'source' => 'dinner_groceries']);
+        $this->assertDatabaseHas('scheduled_tasks', ['plan_date' => '2026-10-11', 'source' => 'dinner_cooking']);
+
+        $this->putJson($url, $settings)->assertOk()->assertJsonCount(3, 'scheduled_tasks');
+        $settings['dinner_dish'] = 'Soup';
+        $this->putJson($url, $settings)->assertOk()->assertJsonCount(3, 'scheduled_tasks');
+        $this->assertDatabaseCount('tasks', 3);
+
+        $settings['day_off'] = true;
+        $settings['dinner_enabled'] = false;
+        $settings['dinner_dish'] = null;
+        $this->putJson($url, $settings)->assertOk()->assertJsonCount(1, 'scheduled_tasks');
+        $this->assertDatabaseCount('tasks', 1);
+        $this->assertDatabaseHas('scheduled_tasks', ['task_id' => $manualTask->id, 'plan_date' => '2026-10-11']);
+    }
+
     public function test_unfinished_dependencies_cannot_be_manually_scheduled(): void
     {
         $dependency = Task::factory()->create();

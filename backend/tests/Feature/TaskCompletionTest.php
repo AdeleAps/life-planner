@@ -2,7 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\Models\ScheduledTask;
 use App\Models\Task;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -83,6 +85,30 @@ class TaskCompletionTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.0.completion_type', 'final')
             ->assertJsonPath('data.1.completion_type', 'session');
+    }
+
+    public function test_finishing_a_scheduled_occurrence_marks_today_done_without_finishing_the_recurring_task(): void
+    {
+        $today = CarbonImmutable::now('Europe/Riga')->toDateString();
+        $tomorrow = CarbonImmutable::now('Europe/Riga')->addDay()->toDateString();
+        $task = Task::factory()->create([
+            'recurrence_type' => 'schedule',
+            'recurrence_rule' => ['unit' => 'day', 'interval' => 1],
+        ]);
+        $todayAssignment = ScheduledTask::factory()->create(['task_id' => $task->id, 'plan_date' => $today]);
+        $tomorrowAssignment = ScheduledTask::factory()->create(['task_id' => $task->id, 'plan_date' => $tomorrow]);
+
+        $this->postJson("/api/v1/tasks/{$task->id}/completions", [
+            'client_request_id' => (string) Str::uuid(),
+            'revision' => 1,
+            'completion_type' => 'occurrence',
+        ])->assertCreated()->assertJsonPath('data.lifecycle_state', 'active');
+
+        $this->assertDatabaseHas('scheduled_tasks', ['id' => $todayAssignment->id, 'status' => 'completed']);
+        $this->assertDatabaseHas('scheduled_tasks', ['id' => $tomorrowAssignment->id, 'status' => 'planned']);
+        $this->getJson("/api/v1/planning-days/{$today}/tasks")
+            ->assertOk()
+            ->assertJsonPath('data.0.status', 'completed');
     }
 
     public function test_project_completes_only_when_its_final_subtask_is_finished(): void

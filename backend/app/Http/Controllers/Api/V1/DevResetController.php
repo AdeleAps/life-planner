@@ -23,8 +23,25 @@ class DevResetController extends Controller
         $tomorrowDate = $today->addDay()->toDateString();
 
         $scheduledTasks = DB::transaction(function () use ($todayDate, $tomorrowDate) {
+            $dinnerTaskIds = ScheduledTask::query()
+                ->where('plan_date', $tomorrowDate)
+                ->whereIn('source', ['dinner_groceries', 'dinner_cooking'])
+                ->pluck('task_id');
+
             PlanningDayInput::query()->where('plan_date', $tomorrowDate)->delete();
             ScheduledTask::query()->whereIn('plan_date', [$todayDate, $tomorrowDate])->delete();
+
+            foreach ($dinnerTaskIds as $dinnerTaskId) {
+                if (! ScheduledTask::query()->where('task_id', $dinnerTaskId)->exists()) {
+                    Task::query()
+                        ->whereKey($dinnerTaskId)
+                        ->whereIn('source', ['dinner_groceries', 'dinner_cooking'])
+                        ->where('lifecycle_state', 'active')
+                        ->whereDoesntHave('completions')
+                        ->delete();
+                }
+            }
+
             Task::query()->where('source', 'test_reset')->delete();
 
             foreach ([
