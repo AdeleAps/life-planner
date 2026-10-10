@@ -1,6 +1,9 @@
 <?php
 
+use App\Http\Controllers\Api\V1\DevResetController;
+use App\Http\Controllers\Api\V1\PlanningDayInputController;
 use App\Http\Controllers\Api\V1\ProjectController;
+use App\Http\Controllers\Api\V1\ScheduledTaskController;
 use App\Http\Controllers\Api\V1\TaskCompletionController;
 use App\Http\Controllers\Api\V1\TaskController;
 use Illuminate\Http\JsonResponse;
@@ -11,6 +14,10 @@ Route::get('/v1/health', static function (): JsonResponse {
 })->name('api.v1.health');
 
 Route::get('/v1/tasks', [TaskController::class, 'index'])->name('api.v1.tasks.index');
+Route::get('/v1/planning-days/{date}/setup', [PlanningDayInputController::class, 'show'])->name('api.v1.planning-days.setup.show');
+Route::put('/v1/planning-days/{date}/setup', [PlanningDayInputController::class, 'update'])->name('api.v1.planning-days.setup.update');
+Route::get('/v1/planning-days/{date}/tasks', [ScheduledTaskController::class, 'index'])->name('api.v1.planning-days.tasks.index');
+Route::post('/v1/dev/reset', DevResetController::class)->name('api.v1.dev.reset');
 Route::post('/v1/tasks', [TaskController::class, 'store'])->name('api.v1.tasks.store');
 Route::put('/v1/tasks/{task}', [TaskController::class, 'update'])->name('api.v1.tasks.update');
 Route::get('/v1/tasks/{task}/completions', [TaskCompletionController::class, 'index'])->name('api.v1.tasks.completions.index');

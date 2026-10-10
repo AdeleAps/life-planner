@@ -85,6 +85,46 @@ class TaskCompletionTest extends TestCase
             ->assertJsonPath('data.1.completion_type', 'session');
     }
 
+    public function test_project_completes_only_when_its_final_subtask_is_finished(): void
+    {
+        $project = Task::factory()->create(['item_type' => 'project', 'type' => null]);
+        $firstTask = Task::factory()->create(['project_id' => $project->id]);
+        $lastTask = Task::factory()->create(['project_id' => $project->id, 'is_multi_session' => true]);
+
+        $this->postJson("/api/v1/tasks/{$firstTask->id}/completions", [
+            'client_request_id' => (string) Str::uuid(),
+            'revision' => 1,
+            'completion_type' => 'final',
+        ])->assertCreated()->assertJsonPath('project_completed', false);
+
+        $this->postJson("/api/v1/tasks/{$lastTask->id}/completions", [
+            'client_request_id' => (string) Str::uuid(),
+            'revision' => 1,
+            'completion_type' => 'session',
+        ])->assertCreated()->assertJsonPath('project_completed', false);
+
+        $this->assertDatabaseHas('tasks', ['id' => $project->id, 'lifecycle_state' => 'active', 'revision' => 1]);
+
+        $finalInput = [
+            'client_request_id' => (string) Str::uuid(),
+            'revision' => 2,
+            'completion_type' => 'final',
+        ];
+
+        $this->postJson("/api/v1/tasks/{$lastTask->id}/completions", $finalInput)
+            ->assertCreated()
+            ->assertJsonPath('project_completed', true)
+            ->assertJsonPath('data.project_title', $project->title);
+
+        $this->postJson("/api/v1/tasks/{$lastTask->id}/completions", $finalInput)
+            ->assertOk()->assertJsonPath('project_completed', false);
+
+        $this->assertDatabaseHas('tasks', ['id' => $project->id, 'lifecycle_state' => 'completed', 'revision' => 2]);
+        $this->getJson('/api/v1/projects')->assertOk()->assertJsonCount(0, 'data');
+        $this->getJson('/api/v1/tasks?include_completed=1')->assertOk()
+            ->assertJsonPath('data.0.project_title', $project->title);
+    }
+
     public function test_invalid_actions_stale_revisions_and_projects_are_rejected(): void
     {
         $task = Task::factory()->create();

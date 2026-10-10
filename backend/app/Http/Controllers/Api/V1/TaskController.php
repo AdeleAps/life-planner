@@ -22,7 +22,7 @@ class TaskController extends Controller
         $tasks = Task::query()
             ->where('item_type', 'task')
             ->whereIn('lifecycle_state', $request->boolean('include_completed') ? ['active', 'completed'] : ['active'])
-            ->with('dependencies:id,title,lifecycle_state')
+            ->with('dependencies:id,title,lifecycle_state', 'project:id,title')
             ->latest('id')
             ->get();
 

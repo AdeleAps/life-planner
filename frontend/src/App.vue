@@ -3,16 +3,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import PlannerDatePicker from './PlannerDatePicker.vue'
 import PlannerSelect from './PlannerSelect.vue'
 
-const tomorrow = new Date()
-tomorrow.setDate(tomorrow.getDate() + 1)
-
-const tomorrowLabel = new Intl.DateTimeFormat(undefined, {
-  weekday: 'long',
-  month: 'long',
-  day: 'numeric',
-}).format(tomorrow)
-
 const activeView = ref('tomorrow')
+const showResetButton = import.meta.env.DEV
+const resetBusy = ref(false)
+const resetFeedback = ref('')
+const resetFailed = ref(false)
 const entryKind = ref('task')
 const serverAvailable = ref(true)
 const isCheckingServer = ref(false)
@@ -26,6 +21,52 @@ const taskFilterTrigger = ref(null)
 const taskFilterDialog = ref(null)
 const taskFiltersOpen = ref(false)
 const todayDate = ref(localDate(new Date()))
+const tomorrowDate = computed(() => {
+  const date = new Date(`${todayDate.value}T12:00:00`)
+  date.setDate(date.getDate() + 1)
+  return localDate(date)
+})
+const tomorrowLabel = computed(() => new Intl.DateTimeFormat(undefined, {
+  weekday: 'long',
+  month: 'long',
+  day: 'numeric',
+}).format(new Date(`${tomorrowDate.value}T12:00:00`)))
+const tomorrowSetup = reactive({ energy_level: 'standard', day_off: false, dinner_enabled: false, dinner_dish: '' })
+const savedTomorrowSetup = ref({ energy_level: 'standard', day_off: false, dinner_enabled: false, dinner_dish: '' })
+const tomorrowSetupSaved = ref(false)
+const tomorrowSetupDialog = ref(null)
+const tomorrowSetupDishInput = ref(null)
+const tomorrowSetupLoading = ref(false)
+const tomorrowSetupSaving = ref(false)
+const tomorrowSetupLoadError = ref('')
+const tomorrowSetupError = ref('')
+const tomorrowDishError = ref('')
+const tomorrowTaskError = ref('')
+const tomorrowScheduledTasks = ref([])
+const tomorrowManualTaskIds = ref([])
+const savedTomorrowManualTaskIds = ref([])
+const tomorrowTaskSearch = ref('')
+const tomorrowTaskPickerOpen = ref(false)
+const captureForTomorrow = ref(false)
+const tomorrowDraftBeforeCreate = ref(null)
+const tomorrowSetupSummary = computed(() => [
+  `${savedTomorrowSetup.value.energy_level[0].toUpperCase()}${savedTomorrowSetup.value.energy_level.slice(1)} energy`,
+  savedTomorrowSetup.value.day_off ? 'Day Off' : null,
+  savedTomorrowSetup.value.dinner_enabled ? `Dinner${savedTomorrowSetup.value.dinner_dish ? ` · ${savedTomorrowSetup.value.dinner_dish}` : ''}` : null,
+  savedTomorrowManualTaskIds.value.length ? `${savedTomorrowManualTaskIds.value.length} ${savedTomorrowManualTaskIds.value.length === 1 ? 'task' : 'tasks'}` : null,
+].filter(Boolean).join(' · '))
+const tomorrowSelectedTasks = computed(() => tomorrowManualTaskIds.value.map((id) =>
+  tasks.value.find((task) => task.id === id) || tomorrowScheduledTasks.value.find((item) => item.task.id === id)?.task,
+).filter(Boolean))
+const tomorrowTaskChoices = computed(() => {
+  const query = tomorrowTaskSearch.value.trim().toLocaleLowerCase()
+  const otherScheduledIds = tomorrowScheduledTasks.value.filter((item) => item.source !== 'manual').map((item) => item.task.id)
+
+  return tasks.value.filter((task) => task.lifecycle_state === 'active'
+    && !tomorrowManualTaskIds.value.includes(task.id)
+    && !otherScheduledIds.includes(task.id)
+    && (!query || task.title.toLocaleLowerCase().includes(query) || (task.description || '').toLocaleLowerCase().includes(query)))
+})
 const projects = ref([])
 const selectedProjectId = ref(null)
 const projectTaskDialog = ref(null)
@@ -325,6 +366,209 @@ function onTaskFiltersClose() {
 
 function refreshToday() {
   todayDate.value = localDate(new Date())
+}
+
+let latestTomorrowSetupLoad = 0
+
+async function loadTomorrowSetup() {
+  const loadId = ++latestTomorrowSetupLoad
+  const planDate = tomorrowDate.value
+  tomorrowSetupLoading.value = true
+  tomorrowSetupLoadError.value = ''
+  tomorrowSetupSaved.value = false
+
+  try {
+    const response = await fetch(`/api/v1/planning-days/${planDate}/setup`, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
+    if (!response.ok) throw new Error('Could not load tomorrow setup')
+    const { data, scheduled_tasks: scheduledTasks } = await response.json()
+    if (loadId !== latestTomorrowSetupLoad || planDate !== tomorrowDate.value) return
+
+    tomorrowScheduledTasks.value = scheduledTasks || []
+    savedTomorrowManualTaskIds.value = tomorrowScheduledTasks.value.filter((item) => item.source === 'manual').map((item) => item.task.id)
+    tomorrowManualTaskIds.value = [...savedTomorrowManualTaskIds.value]
+    savedTomorrowSetup.value = {
+      energy_level: data.energy_level,
+      day_off: data.day_off,
+      dinner_enabled: data.dinner_enabled,
+      dinner_dish: data.dinner_dish || '',
+    }
+    tomorrowSetupSaved.value = data.saved
+    Object.assign(tomorrowSetup, savedTomorrowSetup.value)
+  } catch {
+    if (loadId === latestTomorrowSetupLoad) tomorrowSetupLoadError.value = "Couldn't load tomorrow's setup. Try again."
+  } finally {
+    if (loadId === latestTomorrowSetupLoad) tomorrowSetupLoading.value = false
+  }
+}
+
+function openTomorrowSetup() {
+  if (!tomorrowSetupDialog.value?.open) tomorrowSetupDialog.value?.showModal()
+  tomorrowTaskPickerOpen.value = false
+  tomorrowTaskSearch.value = ''
+  loadTasks()
+  loadTomorrowSetup()
+}
+
+function closeTomorrowSetup() {
+  tomorrowSetupDialog.value?.close()
+}
+
+function onTomorrowSetupClose() {
+  Object.assign(tomorrowSetup, savedTomorrowSetup.value)
+  tomorrowManualTaskIds.value = [...savedTomorrowManualTaskIds.value]
+  tomorrowTaskPickerOpen.value = false
+  tomorrowTaskSearch.value = ''
+  tomorrowTaskError.value = ''
+  tomorrowDishError.value = ''
+  tomorrowSetupError.value = ''
+}
+
+function toggleTomorrowDayOff() {
+  tomorrowSetup.day_off = !tomorrowSetup.day_off
+  if (tomorrowSetup.day_off) {
+    tomorrowSetup.dinner_enabled = false
+    tomorrowSetup.dinner_dish = ''
+    tomorrowDishError.value = ''
+  }
+}
+
+function toggleTomorrowDinner() {
+  tomorrowSetup.dinner_enabled = !tomorrowSetup.dinner_enabled
+  if (tomorrowSetup.dinner_enabled) tomorrowSetup.day_off = false
+  tomorrowDishError.value = ''
+}
+
+function addTaskToTomorrow(task) {
+  if (!task.dependencies_complete || tomorrowManualTaskIds.value.includes(task.id)) return
+  tomorrowManualTaskIds.value = [...tomorrowManualTaskIds.value, task.id]
+  tomorrowTaskSearch.value = ''
+  tomorrowTaskError.value = ''
+}
+
+function removeTaskFromTomorrow(taskId) {
+  tomorrowManualTaskIds.value = tomorrowManualTaskIds.value.filter((id) => id !== taskId)
+  tomorrowTaskError.value = ''
+}
+
+function createTaskForTomorrow() {
+  tomorrowDraftBeforeCreate.value = {
+    setup: { ...tomorrowSetup },
+    taskIds: [...tomorrowManualTaskIds.value],
+  }
+  captureForTomorrow.value = true
+  closeTomorrowSetup()
+  openTaskForm()
+}
+
+async function returnToTomorrowSetup(createdTask = null) {
+  const draft = tomorrowDraftBeforeCreate.value
+  captureForTomorrow.value = false
+  tomorrowDraftBeforeCreate.value = null
+  activeView.value = 'tomorrow'
+  await nextTick()
+
+  if (draft) {
+    Object.assign(tomorrowSetup, draft.setup)
+    tomorrowManualTaskIds.value = [...draft.taskIds]
+  }
+  if (createdTask && !createdTask.dependencies_complete) {
+    tomorrowTaskError.value = 'Finish dependencies before adding this task.'
+  } else if (createdTask && !tomorrowManualTaskIds.value.includes(createdTask.id)) {
+    tomorrowManualTaskIds.value.push(createdTask.id)
+  }
+  tomorrowTaskPickerOpen.value = false
+  tomorrowSetupDialog.value?.showModal()
+}
+
+async function saveTomorrowSetup() {
+  if (tomorrowSetupSaving.value) return
+  tomorrowDishError.value = ''
+  tomorrowTaskError.value = ''
+  tomorrowSetupError.value = ''
+
+  if (tomorrowSetup.dinner_enabled && !tomorrowSetup.dinner_dish.trim()) {
+    tomorrowDishError.value = 'Add the dish for dinner.'
+    await nextTick()
+    tomorrowSetupDishInput.value?.focus()
+    return
+  }
+
+  tomorrowSetupSaving.value = true
+
+  try {
+    const response = await fetch(`/api/v1/planning-days/${tomorrowDate.value}/setup`, {
+      method: 'PUT',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        energy_level: tomorrowSetup.energy_level,
+        day_off: tomorrowSetup.day_off,
+        dinner_enabled: tomorrowSetup.dinner_enabled,
+        dinner_dish: tomorrowSetup.dinner_enabled ? tomorrowSetup.dinner_dish.trim() : null,
+        manual_task_ids: tomorrowManualTaskIds.value,
+      }),
+    })
+    const result = await response.json()
+
+    if (!response.ok) {
+      if (result.errors?.dinner_dish) {
+        tomorrowDishError.value = 'Add the dish for dinner.'
+        await nextTick()
+        tomorrowSetupDishInput.value?.focus()
+        return
+      }
+      if (result.errors?.manual_task_ids || Object.keys(result.errors || {}).some((key) => key.startsWith('manual_task_ids.'))) {
+        tomorrowTaskError.value = result.errors.manual_task_ids?.[0] || 'Check the tasks added for tomorrow.'
+        return
+      }
+      throw new Error("Couldn't save tomorrow's setup. Try again.")
+    }
+
+    savedTomorrowSetup.value = {
+      energy_level: result.data.energy_level,
+      day_off: result.data.day_off,
+      dinner_enabled: result.data.dinner_enabled,
+      dinner_dish: result.data.dinner_dish || '',
+    }
+    tomorrowScheduledTasks.value = result.scheduled_tasks || []
+    savedTomorrowManualTaskIds.value = tomorrowScheduledTasks.value.filter((item) => item.source === 'manual').map((item) => item.task.id)
+    tomorrowManualTaskIds.value = [...savedTomorrowManualTaskIds.value]
+    tomorrowSetupSaved.value = true
+    Object.assign(tomorrowSetup, savedTomorrowSetup.value)
+    closeTomorrowSetup()
+  } catch {
+    tomorrowSetupError.value = "Couldn't save tomorrow's setup. Try again."
+  } finally {
+    tomorrowSetupSaving.value = false
+  }
+}
+
+watch(tomorrowDate, loadTomorrowSetup)
+
+async function resetTestDay() {
+  if (resetBusy.value) return
+  resetBusy.value = true
+  resetFeedback.value = ''
+  resetFailed.value = false
+
+  try {
+    const response = await fetch('/api/v1/dev/reset', {
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+    })
+    if (!response.ok) throw new Error('Reset failed. Try again.')
+    const result = await response.json()
+
+    await Promise.all([loadTomorrowSetup(), loadTasks()])
+    resetFeedback.value = `Tomorrow cleared. ${result.scheduled_tasks.length} tasks set for today.`
+  } catch {
+    resetFailed.value = true
+    resetFeedback.value = 'Reset failed. Try again.'
+  } finally {
+    resetBusy.value = false
+  }
 }
 
 function validDate(value) {
@@ -753,11 +997,11 @@ function showTasks() {
 let latestCompletionLoad = 0
 let completionToastTimeout
 
-function celebrateCompletion(type) {
+function celebrateCompletion(type, projectCompleted = false) {
   window.clearTimeout(completionToastTimeout)
   completionToast.value = {
     id: crypto.randomUUID(),
-    message: type === 'final' ? 'Task complete. Nice work!' : type === 'session' ? 'Session finished. Nice work!' : 'One more done. Nice work!',
+    message: projectCompleted ? 'Project complete. Nice work!' : type === 'final' ? 'Task complete. Nice work!' : type === 'session' ? 'Session finished. Nice work!' : 'One more done. Nice work!',
   }
   completionToastTimeout = window.setTimeout(() => { completionToast.value = null }, 2800)
 }
@@ -895,7 +1139,7 @@ async function submitTaskCompletion(type, task = selectedTask.value) {
     completionRequest.value = null
     actionDialog.value?.close()
     pendingAction.value = null
-    celebrateCompletion(type)
+    celebrateCompletion(type, result.project_completed)
 
     if (type === 'final') {
       if (fromDetails) {
@@ -904,6 +1148,7 @@ async function submitTaskCompletion(type, task = selectedTask.value) {
       }
       await loadTasks()
       if (task.project_id !== null) await loadProjects()
+      if (result.project_completed) selectedProjectId.value = null
     }
   } catch (error) {
     if (fromActionDialog) actionError.value = error.message
@@ -1045,7 +1290,13 @@ async function openTaskEdit(task) {
   taskTitleInput.value?.focus()
 }
 
-function cancelCapture() {
+async function cancelCapture() {
+  if (captureForTomorrow.value) {
+    resetCaptureForm()
+    await returnToTomorrowSetup()
+    return
+  }
+
   if (editingProjectId.value !== null) {
     editingProjectId.value = null
     editingProjectRevision.value = null
@@ -1182,7 +1433,7 @@ async function deleteTask() {
       selectedTaskId.value = null
       activeView.value = taskReturnView.value
     }
-    await loadProjects()
+    await Promise.all([loadProjects(), loadTomorrowSetup()])
     actionDialog.value?.close()
     pendingAction.value = null
     if (result.project_empty) await offerEmptyProjectDeletion(result.project_id)
@@ -1217,7 +1468,7 @@ async function deleteProject(taskAction) {
     }
     actionDialog.value?.close()
     pendingAction.value = null
-    await loadTasks()
+    await Promise.all([loadTasks(), loadTomorrowSetup()])
   } catch (error) {
     actionError.value = error.message || "Couldn't delete this project. Try again."
   } finally {
@@ -1294,6 +1545,7 @@ async function saveTask() {
 
   try {
     const isProject = entryKind.value === 'project'
+    const createdForTomorrow = captureForTomorrow.value && !isProject && editingTaskId.value === null
     const taskInput = {
       title: taskForm.title.trim(),
       description: taskForm.description.trim() || null,
@@ -1372,7 +1624,9 @@ async function saveTask() {
       activeView.value = 'projects'
     } else {
       tasks.value = [result.data, ...tasks.value.filter((task) => task.id !== result.data.id)]
-      if (editingTaskId.value !== null) {
+      if (createdForTomorrow) {
+        selectedTaskId.value = null
+      } else if (editingTaskId.value !== null) {
         selectedTaskId.value = result.data.id
         activeView.value = 'tasks'
       } else if (savedProjectId !== null) {
@@ -1389,6 +1643,7 @@ async function saveTask() {
     editingProjectRevision.value = null
     resetCaptureForm()
     clientRequestIds[entryKind.value] = crypto.randomUUID()
+    if (createdForTomorrow) await returnToTomorrowSetup(result.data)
   } catch (error) {
     saveError.value = error.message || `Couldn't save this ${entryKind.value}. Try again.`
   } finally {
@@ -1400,6 +1655,7 @@ let todayRefreshInterval
 onMounted(() => {
   checkServer()
   refreshToday()
+  loadTomorrowSetup()
   document.addEventListener('visibilitychange', refreshToday)
   todayRefreshInterval = window.setInterval(refreshToday, 60_000)
 })
@@ -1417,9 +1673,12 @@ onBeforeUnmount(() => {
         <img class="brand-flower" src="/sunflower.svg?v=2" alt="" />
         <span class="wordmark">Planner</span>
       </button>
+      <button v-if="showResetButton && activeView === 'tomorrow'" class="test-reset-button" type="button"
+        :disabled="resetBusy" @click="resetTestDay">{{ resetBusy ? 'Resetting…' : 'Reset' }}</button>
     </header>
 
     <main class="main-content">
+      <p v-if="activeView === 'tomorrow' && resetFeedback" class="reset-feedback" :class="{ 'is-error': resetFailed }" role="status">{{ resetFeedback }}</p>
       <div v-if="!serverAvailable" class="connection-notice" role="alert">
         <p>Planner can't reach its server right now.</p>
         <button type="button" :disabled="isCheckingServer" @click="checkServer">
@@ -1428,11 +1687,29 @@ onBeforeUnmount(() => {
       </div>
 
       <template v-if="activeView === 'tomorrow'">
-        <section class="hero hero-tomorrow" aria-labelledby="tomorrow-title">
+        <section class="hero hero-tomorrow" :class="{ 'has-setup': tomorrowSetupSaved && !tomorrowSetupLoading && !tomorrowSetupLoadError }" aria-labelledby="tomorrow-title">
           <div class="hero-content">
             <p class="hero-kicker">Your day ahead</p>
             <h1 id="tomorrow-title">Tomorrow<span class="title-dot">.</span></h1>
             <p class="hero-date">{{ tomorrowLabel }}</p>
+            <button class="hero-setup-button" :class="{ 'is-saved': tomorrowSetupSaved && !tomorrowSetupLoading && !tomorrowSetupLoadError }"
+              type="button" @click="openTomorrowSetup">
+              <span class="hero-setup-symbol" aria-hidden="true">
+                <svg v-if="tomorrowSetupSaved && !tomorrowSetupLoading && !tomorrowSetupLoadError" viewBox="0 0 24 24" fill="none">
+                  <path d="m5 12 4.5 4.5L19 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" fill="none">
+                  <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+                </svg>
+              </span>
+              <span class="hero-setup-copy">
+                <strong>{{ tomorrowSetupLoading ? 'Loading setup…' : tomorrowSetupLoadError ? 'Setup unavailable' : tomorrowSetupSaved ? 'You’re set' : 'Set up tomorrow' }}</strong>
+                <small>{{ tomorrowSetupLoading ? 'One moment' : tomorrowSetupLoadError ? 'Tap to retry' : tomorrowSetupSaved ? tomorrowSetupSummary : 'Time to plan!' }}</small>
+              </span>
+              <svg class="hero-setup-arrow" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
           </div>
           <img class="hero-flower" src="/sunflower.svg?v=2" alt="" aria-hidden="true" />
         </section>
@@ -1449,7 +1726,125 @@ onBeforeUnmount(() => {
           </svg>
         </button>
 
-        <section class="empty-plan" aria-labelledby="empty-plan-title">
+        <dialog ref="tomorrowSetupDialog" class="options-sheet tomorrow-setup-sheet" aria-labelledby="tomorrow-setup-title"
+          @close="onTomorrowSetupClose" @click.self="closeTomorrowSetup">
+          <header class="options-sheet-header tomorrow-setup-header">
+            <div>
+              <h2 id="tomorrow-setup-title">Tomorrow setup</h2>
+              <p>{{ tomorrowLabel }}</p>
+            </div>
+            <button type="button" aria-label="Close tomorrow setup" @click="closeTomorrowSetup">×</button>
+          </header>
+          <form class="tomorrow-setup-form" @submit.prevent="saveTomorrowSetup">
+            <div class="options-sheet-body tomorrow-setup-body">
+              <p v-if="tomorrowSetupLoading" class="list-message">Loading…</p>
+              <div v-else-if="tomorrowSetupLoadError" class="tomorrow-setup-load-error" role="alert">
+                <p>{{ tomorrowSetupLoadError }}</p>
+                <button type="button" @click="loadTomorrowSetup">Try again</button>
+              </div>
+              <template v-else>
+                <fieldset class="tomorrow-energy">
+                  <legend>Energy</legend>
+                  <div class="choice-grid tomorrow-energy-options" role="radiogroup" aria-label="Energy for tomorrow">
+                    <label v-for="level in ['low', 'standard']" :key="level" class="choice-option tomorrow-energy-option"
+                      :class="{ selected: tomorrowSetup.energy_level === level }">
+                      <input v-model="tomorrowSetup.energy_level" type="radio" name="tomorrow-energy" :value="level" />
+                      <span>{{ level[0].toUpperCase() + level.slice(1) }}</span>
+                    </label>
+                  </div>
+                </fieldset>
+
+                <div class="tomorrow-setup-setting">
+                  <button class="task-completed-toggle" type="button" role="switch" :aria-checked="tomorrowSetup.day_off"
+                    @click="toggleTomorrowDayOff">
+                    <span>Day Off</span>
+                    <span class="task-toggle-track" aria-hidden="true"><span class="task-toggle-thumb"></span></span>
+                  </button>
+                  <p>Planner adds no tasks automatically.</p>
+                </div>
+
+                <div class="tomorrow-setup-setting">
+                  <button class="task-completed-toggle" type="button" role="switch" :aria-checked="tomorrowSetup.dinner_enabled"
+                    @click="toggleTomorrowDinner">
+                    <span>Dinner</span>
+                    <span class="task-toggle-track" aria-hidden="true"><span class="task-toggle-thumb"></span></span>
+                  </button>
+                  <p>Plan groceries and cooking.</p>
+                  <label v-if="tomorrowSetup.dinner_enabled" class="field tomorrow-dish-field" :class="{ 'has-error': tomorrowDishError }">
+                    <span>Dish</span>
+                    <input ref="tomorrowSetupDishInput" v-model="tomorrowSetup.dinner_dish" type="text" maxlength="255"
+                      :aria-invalid="Boolean(tomorrowDishError)" :aria-describedby="tomorrowDishError ? 'tomorrow-dish-error' : undefined"
+                      @input="tomorrowDishError = ''" />
+                    <span v-if="tomorrowDishError" id="tomorrow-dish-error" class="field-error" role="alert">{{ tomorrowDishError }}</span>
+                  </label>
+                </div>
+
+                <section class="tomorrow-tasks-setting" aria-labelledby="tomorrow-tasks-title">
+                  <div class="tomorrow-tasks-heading">
+                    <h3 id="tomorrow-tasks-title">Tasks for tomorrow</h3>
+                    <span>{{ tomorrowManualTaskIds.length || 'None' }}</span>
+                  </div>
+                  <ul v-if="tomorrowSelectedTasks.length" class="tomorrow-selected-tasks">
+                    <li v-for="task in tomorrowSelectedTasks" :key="task.id">
+                      <span>{{ task.title }}</span>
+                      <button type="button" :aria-label="`Remove ${task.title} from tomorrow`" @click="removeTaskFromTomorrow(task.id)">×</button>
+                    </li>
+                  </ul>
+                  <button class="tomorrow-add-task" type="button" :aria-expanded="tomorrowTaskPickerOpen" @click="tomorrowTaskPickerOpen = !tomorrowTaskPickerOpen">
+                    <span>{{ tomorrowTaskPickerOpen ? 'Close task list' : 'Add task' }}</span>
+                    <span aria-hidden="true">{{ tomorrowTaskPickerOpen ? '−' : '+' }}</span>
+                  </button>
+                  <div v-if="tomorrowTaskPickerOpen" class="tomorrow-task-picker">
+                    <button class="project-task-create" type="button" @click="createTaskForTomorrow">
+                      <span>New task</span>
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                    </button>
+                    <label v-if="tasks.length > 5 || tomorrowTaskSearch" class="project-task-search">
+                      <span class="visually-hidden">Search tasks</span>
+                      <input v-model="tomorrowTaskSearch" type="search" placeholder="Search tasks" />
+                    </label>
+                    <p v-if="tasksLoading" class="project-task-empty">Loading tasks…</p>
+                    <div v-else-if="tasksError" class="project-task-empty" role="alert">
+                      <p>{{ tasksError }}</p>
+                      <button type="button" @click="loadTasks">Try again</button>
+                    </div>
+                    <p v-else-if="tomorrowTaskChoices.length === 0" class="project-task-empty">No tasks to add.</p>
+                    <ul v-else class="project-task-choices">
+                      <li v-for="task in tomorrowTaskChoices" :key="task.id">
+                        <button type="button" :disabled="!task.dependencies_complete" @click="addTaskToTomorrow(task)">
+                          <span class="project-task-choice-label">
+                            <strong>{{ task.title }}</strong>
+                            <small>{{ task.type === 'day' ? 'Day' : 'Evening' }}{{ task.dependencies_complete ? '' : ' · Dependencies first' }}</small>
+                          </span>
+                          <span class="project-task-choice-action">Add</span>
+                        </button>
+                      </li>
+                    </ul>
+                  </div>
+                  <p v-if="tomorrowTaskError" class="form-error" role="alert">{{ tomorrowTaskError }}</p>
+                </section>
+                <p v-if="tomorrowSetupError" class="form-error" role="alert">{{ tomorrowSetupError }}</p>
+              </template>
+            </div>
+            <footer v-if="!tomorrowSetupLoadError" class="options-sheet-footer">
+              <button type="submit" :disabled="tomorrowSetupLoading || tomorrowSetupSaving">{{ tomorrowSetupSaving ? 'Saving…' : 'Save setup' }}</button>
+            </footer>
+          </form>
+        </dialog>
+
+        <section v-if="tomorrowScheduledTasks.length" class="tomorrow-planned" aria-labelledby="tomorrow-planned-title">
+          <div class="tomorrow-planned-heading">
+            <h2 id="tomorrow-planned-title">Tomorrow’s tasks</h2>
+            <span>{{ tomorrowScheduledTasks.length }}</span>
+          </div>
+          <ul>
+            <li v-for="item in tomorrowScheduledTasks" :key="item.id">
+              <strong>{{ item.task.title }}</strong>
+              <span>{{ item.task.type === 'day' ? 'Day' : 'Evening' }}</span>
+            </li>
+          </ul>
+        </section>
+        <section v-else class="empty-plan" aria-labelledby="empty-plan-title">
           <div class="empty-plan-mark" aria-hidden="true">
             <img src="/sunflower.svg?v=2" alt="" />
           </div>
@@ -1481,7 +1876,7 @@ onBeforeUnmount(() => {
             </div>
             <dl class="task-detail-facts">
               <div><dt>Type</dt><dd>{{ selectedTask.type === 'day' ? 'Day' : 'Evening' }}</dd></div>
-              <div v-if="selectedTask.project_id"><dt>Project</dt><dd>{{ projects.find((project) => project.id === selectedTask.project_id)?.title || 'Project' }}</dd></div>
+              <div v-if="selectedTask.project_id"><dt>Project</dt><dd>{{ projects.find((project) => project.id === selectedTask.project_id)?.title || selectedTask.project_title || 'Project' }}</dd></div>
               <div v-if="selectedTask.type === 'evening'"><dt>Energy</dt><dd>{{ selectedTask.energy_cost === 'high' ? 'High' : 'Standard' }}</dd></div>
               <div v-if="selectedTask.type === 'evening'"><dt>Priority</dt><dd>{{ priorityLabel(selectedTask.priority) }}</dd></div>
               <div><dt>Repeat</dt><dd>{{ repeatLabel(selectedTask.recurrence_type, selectedTask.recurrence_rule) }}</dd></div>
@@ -1616,7 +2011,7 @@ onBeforeUnmount(() => {
                       <span class="task-row-type" :class="task.type === 'day' ? 'is-day' : 'is-evening'">{{ task.type === 'day' ? 'Day' : 'Evening' }}</span>
                       <span v-if="task.project_id" class="task-row-fact">
                         <span class="task-row-label">Project</span>
-                        <span class="task-row-fact-value">{{ projects.find((project) => project.id === task.project_id)?.title || `#${task.project_id}` }}</span>
+                        <span class="task-row-fact-value">{{ projects.find((project) => project.id === task.project_id)?.title || task.project_title || `#${task.project_id}` }}</span>
                       </span>
                       <span v-if="task.type === 'evening'" class="task-row-fact">
                         <span class="task-row-label">Priority</span>
@@ -1649,13 +2044,13 @@ onBeforeUnmount(() => {
 
       <template v-else-if="activeView === 'capture'">
         <header class="capture-heading">
-          <button class="project-back" type="button" @click="cancelCapture">← {{ editingTaskId !== null ? 'Task' : entryKind === 'project' ? 'Projects' : 'Tasks' }}</button>
+          <button class="project-back" type="button" @click="cancelCapture">← {{ captureForTomorrow ? 'Tomorrow setup' : editingTaskId !== null ? 'Task' : entryKind === 'project' ? 'Projects' : 'Tasks' }}</button>
           <h1>{{ editingTaskId !== null ? 'Edit task' : editingProjectId !== null ? 'Edit project' : `New ${entryKind}` }}</h1>
         </header>
 
         <section class="task-panel" :aria-label="editingTaskId !== null ? 'Edit task' : editingProjectId !== null ? 'Edit project' : entryKind === 'project' ? 'Add a project' : 'Add a task'">
           <form class="task-form" novalidate @submit.prevent="saveTask">
-            <div v-if="editingTaskId === null && editingProjectId === null" class="capture-kind" role="group" aria-label="Add">
+            <div v-if="editingTaskId === null && editingProjectId === null && !captureForTomorrow" class="capture-kind" role="group" aria-label="Add">
               <button type="button" :aria-pressed="entryKind === 'task'" @click="setEntryKind('task')">Task</button>
               <button type="button" :aria-pressed="entryKind === 'project'" @click="setEntryKind('project')">Project</button>
             </div>

@@ -32,7 +32,7 @@ class TaskCompletionController extends Controller
     {
         $input = $request->validated();
 
-        [$task, $completion, $created] = DB::transaction(function () use ($task, $input): array {
+        [$task, $completion, $created, $projectCompleted] = DB::transaction(function () use ($task, $input): array {
             $task = Task::query()
                 ->where('item_type', 'task')
                 ->lockForUpdate()
@@ -45,7 +45,7 @@ class TaskCompletionController extends Controller
             if ($existing !== null) {
                 abort_if($existing->task_id !== $task->id || $existing->completion_type !== $input['completion_type'], 409, 'Request ID belongs to another completion.');
 
-                return [$task, $existing, false];
+                return [$task, $existing, false, false];
             }
 
             abort_if($task->lifecycle_state !== 'active', 409, 'This task is already completed.');
@@ -72,15 +72,37 @@ class TaskCompletionController extends Controller
             $task->revision++;
             $task->save();
 
-            return [$task, $completion, true];
-        });
+            $projectCompleted = false;
 
-        $task->load('dependencies:id,title,lifecycle_state');
+            if ($input['completion_type'] === 'final' && $task->project_id !== null) {
+                $project = Task::query()
+                    ->where('item_type', 'project')
+                    ->lockForUpdate()
+                    ->findOrFail($task->project_id);
+
+                $hasUnfinishedSteps = $project->steps()
+                    ->where('lifecycle_state', '!=', 'completed')
+                    ->lockForUpdate()
+                    ->first(['id']) !== null;
+
+                if ($project->lifecycle_state === 'active' && ! $hasUnfinishedSteps) {
+                    $project->lifecycle_state = 'completed';
+                    $project->revision++;
+                    $project->save();
+                    $projectCompleted = true;
+                }
+            }
+
+            return [$task, $completion, true, $projectCompleted];
+        }, 3);
+
+        $task->load('dependencies:id,title,lifecycle_state', 'project:id,title');
 
         return response()->json([
             'data' => (new TaskResource($task))->toArray($request),
             'completion' => (new TaskCompletionResource($completion))->toArray($request),
             'completion_count' => $task->completions()->count(),
+            'project_completed' => $projectCompleted,
         ], $created ? 201 : 200);
     }
 }

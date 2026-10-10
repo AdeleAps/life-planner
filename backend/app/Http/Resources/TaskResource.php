@@ -28,6 +28,7 @@ class TaskResource extends JsonResource
             'item_type' => $this->item_type,
             'kind' => $this->item_type === 'project' ? 'project' : ($this->recurrence_type === 'one_time' ? 'one_off' : 'recurring'),
             'project_id' => $this->project_id,
+            'project_title' => $this->whenLoaded('project', fn (): ?string => $this->project?->title),
             'steps_count' => $this->item_type === 'project' ? $this->steps_count : null,
             'type' => $this->type,
             'priority' => $this->priority,
