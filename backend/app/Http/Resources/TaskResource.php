@@ -27,6 +27,7 @@ class TaskResource extends JsonResource
             'item_type' => $this->item_type,
             'kind' => $this->item_type === 'project' ? 'project' : ($this->recurrence_type === 'one_time' ? 'one_off' : 'recurring'),
             'project_id' => $this->project_id,
+            'steps_count' => $this->item_type === 'project' ? $this->steps_count : null,
             'type' => $this->type,
             'priority' => $this->priority,
             'energy_cost' => $this->energy_cost,
@@ -39,6 +40,7 @@ class TaskResource extends JsonResource
             'deadline_on' => $this->deadline_on?->toDateString(),
             'deadline_is_hard' => $this->deadline_is_hard,
             'lifecycle_state' => $this->lifecycle_state,
+            'revision' => $this->revision,
             'created_at' => $this->created_at?->toIso8601String(),
         ];
     }

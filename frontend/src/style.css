@@ -391,8 +391,72 @@ textarea:focus-visible {
   margin-bottom: 24px;
 }
 
+.task-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+}
+
+.task-edit-button {
+  min-height: 38px;
+  padding: 7px 17px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.task-edit-button:hover {
+  border-color: var(--green-deep);
+}
+
 .task-detail-heading h1 {
   overflow-wrap: anywhere;
+}
+
+.task-detail-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 11px;
+}
+
+.task-detail-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 24px;
+  padding-top: 19px;
+  border-top: 1px solid var(--line);
+}
+
+.task-detail-controls button,
+.project-detail-edit,
+.project-detail-delete {
+  min-height: 42px;
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.task-detail-controls .task-delete-button,
+.project-detail-delete {
+  border-color: #f1d2cc;
+  color: #a34336;
+}
+
+.task-detail-controls button:disabled {
+  opacity: 0.55;
 }
 
 .task-panel {
@@ -566,6 +630,51 @@ textarea:focus-visible {
   cursor: pointer;
   font-size: 15px;
   font-weight: 800;
+}
+
+.action-sheet-body p {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.action-sheet-buttons {
+  display: grid;
+  gap: 9px;
+}
+
+.action-sheet-buttons button {
+  min-height: 48px;
+  padding: 12px 16px;
+  border-radius: 13px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.action-sheet-buttons button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.action-preserve {
+  border: 0;
+  background: var(--sun);
+  color: var(--ink);
+}
+
+.action-destructive {
+  border: 1px solid #efc5be;
+  background: #fff0ed;
+  color: #a34336;
+}
+
+.action-cancel {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
 }
 
 .project-task-picker-header {
@@ -1933,6 +2042,51 @@ textarea:focus-visible {
   height: 18px;
 }
 
+.task-completed-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  min-height: 50px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 750;
+  text-align: left;
+}
+
+.task-toggle-track {
+  display: flex;
+  align-items: center;
+  flex: 0 0 43px;
+  height: 26px;
+  padding: 3px;
+  border-radius: 999px;
+  background: #dce6e1;
+  transition: background 160ms ease;
+}
+
+.task-toggle-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(19, 73, 58, 0.15);
+  transition: transform 160ms ease;
+}
+
+.task-completed-toggle[aria-checked="true"] .task-toggle-track {
+  background: var(--sun);
+}
+
+.task-completed-toggle[aria-checked="true"] .task-toggle-thumb {
+  transform: translateX(17px);
+}
+
 .list-heading {
   margin-bottom: 18px;
 }
@@ -1946,18 +2100,93 @@ textarea:focus-visible {
   list-style: none;
 }
 
+.task-list-item,
+.project-list-item {
+  position: relative;
+}
+
+.task-list-item .task-row,
+.project-list-item .project-card {
+  padding-right: 60px;
+}
+
+.task-row-delete,
+.project-row-delete {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: #93655f;
+  cursor: pointer;
+}
+
+.task-row-delete:hover,
+.project-row-delete:hover {
+  background: #fff0ed;
+  color: #a34336;
+}
+
+.task-row-delete svg,
+.project-row-delete svg {
+  width: 20px;
+  height: 20px;
+}
+
 .task-card {
   position: relative;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
+  display: grid;
+  gap: 13px;
   overflow: hidden;
-  padding: 21px 24px;
+  padding: 19px 21px;
   border: 1px solid rgba(220, 235, 228, 0.85);
   border-radius: 20px;
   background: var(--surface);
   box-shadow: 0 9px 26px rgba(19, 73, 58, 0.05);
+}
+
+.project-step-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+}
+
+.project-step-actions {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  gap: 7px;
+}
+
+.project-step-actions button {
+  min-height: 36px;
+  padding: 7px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.project-step-actions .project-step-delete {
+  border-color: #f1d2cc;
+  color: #a34336;
+}
+
+.project-step-actions button:disabled {
+  opacity: 0.6;
 }
 
 .task-card::before {
@@ -2012,6 +2241,14 @@ textarea:focus-visible {
 
 .task-row:hover {
   border-color: var(--sun);
+}
+
+.task-row.is-completed {
+  background: #f7faf8;
+}
+
+.task-row.is-completed strong {
+  color: var(--muted);
 }
 
 .task-row.has-hard-deadline {
@@ -2078,6 +2315,19 @@ textarea:focus-visible {
   border-radius: 8px;
   font-size: 13px;
   font-weight: 700;
+  line-height: 1.35;
+}
+
+.task-completed-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 27px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: #e4ebe7;
+  color: #415a50;
+  font-size: 13px;
+  font-weight: 750;
   line-height: 1.35;
 }
 
@@ -2212,6 +2462,35 @@ textarea:focus-visible {
 .projects-heading:has(.collection-add) h1 {
   flex-basis: auto;
   order: 0;
+}
+
+.projects-heading:has(.project-detail-actions) h1 {
+  position: relative;
+  margin-top: 6px;
+  padding-bottom: 13px;
+  font-size: clamp(38px, 8vw, 48px);
+  font-weight: 800;
+  letter-spacing: -0.07em;
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+}
+
+.projects-heading:has(.project-detail-actions) h1::after {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 54px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--sun);
+  content: '';
+}
+
+.project-detail-actions {
+  order: 0;
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .project-back {

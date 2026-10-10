@@ -21,6 +21,7 @@ const taskSearch = ref('')
 const taskTypeFilter = ref('all')
 const taskSort = ref('newest')
 const overdueOnly = ref(false)
+const showCompleted = ref(false)
 const taskFilterTrigger = ref(null)
 const taskFilterDialog = ref(null)
 const taskFiltersOpen = ref(false)
@@ -31,8 +32,18 @@ const projectTaskDialog = ref(null)
 const projectTaskSearch = ref('')
 const projectTaskSavingId = ref(null)
 const projectTaskError = ref('')
+const removingTaskId = ref(null)
+const removalError = ref('')
+const actionDialog = ref(null)
+const pendingAction = ref(null)
+const actionBusy = ref(false)
+const actionError = ref('')
 const selectedTaskId = ref(null)
 const taskReturnView = ref('tasks')
+const editingTaskId = ref(null)
+const editingTaskRevision = ref(null)
+const editingProjectId = ref(null)
+const editingProjectRevision = ref(null)
 const tasksLoading = ref(false)
 const tasksError = ref('')
 const projectsLoading = ref(false)
@@ -73,8 +84,17 @@ const repeatHasError = computed(() => repeatErrorFields.some((field) => fieldErr
 const deadlineErrorFields = ['deadline', 'deadline_date', 'deadline_amount']
 const deadlineHasError = computed(() => deadlineErrorFields.some((field) => fieldErrors[field]))
 const optionsHaveError = computed(() => Object.keys(fieldErrors).some((field) => field !== 'title'))
-const dependencyChoices = computed(() => [...tasks.value, ...projects.value].filter((item) =>
-  entryKind.value === 'project' || item.id !== taskForm.project_id))
+const dependencyChoices = computed(() => {
+  const savedDependencies = editingTaskId.value !== null
+    ? (selectedTask.value?.dependencies || [])
+    : editingProjectId.value !== null ? (selectedProject.value?.dependencies || []) : []
+  const choices = [...tasks.value, ...projects.value, ...savedDependencies]
+  return choices.filter((item, index) =>
+    choices.findIndex((choice) => choice.id === item.id) === index
+    && item.id !== editingTaskId.value
+    && item.id !== editingProjectId.value
+    && (entryKind.value === 'project' || item.id !== taskForm.project_id))
+})
 const availableDependencies = computed(() => dependencyChoices.value.filter((item) =>
   item.title.toLocaleLowerCase().includes(dependencySearch.value.trim().toLocaleLowerCase())))
 const selectedProject = computed(() => projects.value.find((project) => project.id === selectedProjectId.value))
@@ -83,7 +103,8 @@ const projectOptions = computed(() => [
   { value: null, label: 'None' },
   ...projects.value.map((project) => ({ value: project.id, label: project.title })),
 ])
-const projectSteps = computed(() => tasks.value.filter((task) => task.project_id === selectedProjectId.value))
+const projectSteps = computed(() => tasks.value.filter((task) =>
+  task.project_id === selectedProjectId.value && task.lifecycle_state === 'active'))
 const eligibleProjectTasks = computed(() => tasks.value.filter((task) =>
   task.item_type === 'task'
   && task.lifecycle_state === 'active'
@@ -94,7 +115,7 @@ const eligibleProjectTasks = computed(() => tasks.value.filter((task) =>
 const filteredProjectTasks = computed(() => eligibleProjectTasks.value.filter((task) =>
   task.title.toLocaleLowerCase().includes(projectTaskSearch.value.trim().toLocaleLowerCase())))
 const hasTaskListFilters = computed(() => Boolean(
-  taskSearch.value.trim() || taskTypeFilter.value !== 'all' || taskSort.value !== 'newest' || overdueOnly.value,
+  taskSearch.value.trim() || taskTypeFilter.value !== 'all' || taskSort.value !== 'newest' || overdueOnly.value || showCompleted.value,
 ))
 const visibleTasks = computed(() => {
   const search = taskSearch.value.trim().toLocaleLowerCase()
@@ -256,7 +277,7 @@ function localDate(date) {
 }
 
 function isOverdue(task) {
-  return Boolean(task.deadline_on && task.deadline_on < todayDate.value)
+  return Boolean(task.lifecycle_state === 'active' && task.deadline_on && task.deadline_on < todayDate.value)
 }
 
 function resetTaskListView() {
@@ -264,7 +285,12 @@ function resetTaskListView() {
   taskTypeFilter.value = 'all'
   taskSort.value = 'newest'
   overdueOnly.value = false
+  showCompleted.value = false
 }
+
+watch(showCompleted, () => {
+  loadTasks()
+})
 
 function openTaskFilters() {
   if (!taskFilterDialog.value?.open) taskFilterDialog.value?.showModal()
@@ -648,12 +674,16 @@ async function checkServer() {
   }
 }
 
+let latestTaskLoad = 0
+
 async function loadTasks() {
+  const loadId = ++latestTaskLoad
   tasksLoading.value = true
   tasksError.value = ''
 
   try {
-    const response = await fetch('/api/v1/tasks', {
+    const url = showCompleted.value ? '/api/v1/tasks?include_completed=1' : '/api/v1/tasks'
+    const response = await fetch(url, {
       headers: { Accept: 'application/json' },
       cache: 'no-store',
     })
@@ -662,11 +692,12 @@ async function loadTasks() {
       throw new Error('Could not load tasks')
     }
 
-    tasks.value = (await response.json()).data
+    const result = await response.json()
+    if (loadId === latestTaskLoad) tasks.value = result.data
   } catch {
-    tasksError.value = "Tasks couldn't be loaded. Try again."
+    if (loadId === latestTaskLoad) tasksError.value = "Tasks couldn't be loaded. Try again."
   } finally {
-    tasksLoading.value = false
+    if (loadId === latestTaskLoad) tasksLoading.value = false
   }
 }
 
@@ -716,11 +747,38 @@ function showProjects() {
 
 async function openProjectForm() {
   resetCaptureForm()
+  editingTaskId.value = null
+  editingTaskRevision.value = null
+  editingProjectId.value = null
+  editingProjectRevision.value = null
   clientRequestIds.project = crypto.randomUUID()
   setEntryKind('project')
   activeView.value = 'capture'
   loadTasks()
   loadProjects()
+  await nextTick()
+  taskTitleInput.value?.focus()
+}
+
+async function openProjectEdit(project) {
+  resetCaptureForm()
+  editingTaskId.value = null
+  editingTaskRevision.value = null
+  editingProjectId.value = project.id
+  editingProjectRevision.value = project.revision
+  entryKind.value = 'project'
+  taskForm.title = project.title
+  taskForm.description = project.description || ''
+  taskForm.priority = project.priority || 'standard'
+  taskForm.dependency_ids = (project.dependencies || []).map((dependency) => dependency.id)
+
+  if (project.deadline_on) {
+    deadlineForm.mode = 'date'
+    deadlineForm.date = project.deadline_on
+    deadlineForm.is_hard = Boolean(project.deadline_is_hard)
+  }
+
+  activeView.value = 'capture'
   await nextTick()
   taskTitleInput.value?.focus()
 }
@@ -750,6 +808,10 @@ function onOptionsClose() {
 
 async function openTaskForm(projectId = null) {
   resetCaptureForm()
+  editingTaskId.value = null
+  editingTaskRevision.value = null
+  editingProjectId.value = null
+  editingProjectRevision.value = null
   clientRequestIds.task = crypto.randomUUID()
   setEntryKind('task')
   taskForm.project_id = projectId
@@ -758,6 +820,73 @@ async function openTaskForm(projectId = null) {
   loadProjects()
   await nextTick()
   taskTitleInput.value?.focus()
+}
+
+async function openTaskEdit(task) {
+  resetCaptureForm()
+  editingTaskId.value = task.id
+  editingTaskRevision.value = task.revision
+  editingProjectId.value = null
+  editingProjectRevision.value = null
+  entryKind.value = 'task'
+  taskForm.type = task.type
+  taskForm.recurrence_type = task.recurrence_type
+  await nextTick()
+
+  taskForm.title = task.title
+  taskForm.description = task.description || ''
+  taskForm.energy_cost = task.energy_cost
+  taskForm.priority = task.priority
+  taskForm.is_multi_session = Boolean(task.is_multi_session)
+  taskForm.advance_notice_days = task.advance_notice_days
+  taskForm.day_preference = task.day_preference
+  taskForm.day_preference_is_hard = Boolean(task.day_preference_is_hard)
+  taskForm.project_id = task.project_id
+  taskForm.dependency_ids = (task.dependencies || []).map((dependency) => dependency.id)
+
+  if (task.recurrence_type === 'schedule' && task.recurrence_rule) {
+    repeatForm.unit = task.recurrence_rule.unit
+    repeatForm.interval = task.recurrence_rule.interval
+    repeatForm.weekdays = [...(task.recurrence_rule.weekdays || [])]
+    repeatForm.day_of_month = task.recurrence_rule.day_of_month || repeatForm.day_of_month
+  } else if (task.recurrence_type === 'count' && task.recurrence_rule) {
+    repeatForm.period_unit = task.recurrence_rule.period_unit
+    repeatForm.period_interval = task.recurrence_rule.period_interval
+    repeatForm.min_occurrences = task.recurrence_rule.min_occurrences
+    repeatForm.max_occurrences = task.recurrence_rule.max_occurrences
+    repeatForm.count_mode = task.recurrence_rule.min_occurrences === task.recurrence_rule.max_occurrences ? 'exact' : 'range'
+  }
+
+  if (task.deadline_on) {
+    deadlineForm.mode = 'date'
+    deadlineForm.date = task.deadline_on
+    deadlineForm.is_hard = Boolean(task.deadline_is_hard)
+  }
+
+  activeView.value = 'capture'
+  await nextTick()
+  taskTitleInput.value?.focus()
+}
+
+function cancelCapture() {
+  if (editingProjectId.value !== null) {
+    editingProjectId.value = null
+    editingProjectRevision.value = null
+    resetCaptureForm()
+    activeView.value = 'projects'
+    return
+  }
+
+  if (editingTaskId.value !== null) {
+    editingTaskId.value = null
+    editingTaskRevision.value = null
+    resetCaptureForm()
+    activeView.value = 'tasks'
+    return
+  }
+
+  if (entryKind.value === 'project') showProjects()
+  else showTasks()
 }
 
 function openProjectTaskPicker() {
@@ -796,6 +925,126 @@ async function addExistingTaskToProject(task) {
     projectTaskError.value = error.message || "Couldn't add this task. Try again."
   } finally {
     projectTaskSavingId.value = null
+  }
+}
+
+function openTaskDelete(task) {
+  pendingAction.value = { kind: 'delete-task', task }
+  actionError.value = ''
+  actionDialog.value?.showModal()
+}
+
+async function openProjectDelete(project) {
+  await loadProjects()
+  const currentProject = projects.value.find((item) => item.id === project.id) || project
+  pendingAction.value = { kind: currentProject.steps_count > 0 ? 'delete-project' : 'delete-empty-project', project: currentProject }
+  actionError.value = ''
+  actionDialog.value?.showModal()
+}
+
+function closeActionDialog() {
+  if (actionBusy.value) return
+  actionDialog.value?.close()
+  pendingAction.value = null
+  actionError.value = ''
+}
+
+async function offerEmptyProjectDeletion(projectId) {
+  const project = projects.value.find((item) => item.id === projectId)
+  if (!project) return
+
+  await nextTick()
+  pendingAction.value = { kind: 'empty-project', project }
+  actionError.value = ''
+  actionDialog.value?.showModal()
+}
+
+async function removeTaskFromProject(task) {
+  if (removingTaskId.value !== null) return
+  removingTaskId.value = task.id
+  removalError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/tasks/${task.id}/project`, {
+      method: 'DELETE',
+      headers: { Accept: 'application/json' },
+    })
+    if (!response.ok) throw new Error("Couldn't remove this task from its project.")
+    const result = await response.json()
+
+    tasks.value = tasks.value.map((item) => item.id === task.id ? result.data : item)
+    if (selectedTaskId.value === task.id && taskReturnView.value === 'projects') {
+      selectedTaskId.value = null
+      activeView.value = 'projects'
+    }
+    await loadProjects()
+    if (result.project_empty) await offerEmptyProjectDeletion(task.project_id)
+  } catch (error) {
+    removalError.value = error.message || "Couldn't remove this task from its project."
+  } finally {
+    removingTaskId.value = null
+  }
+}
+
+async function deleteTask() {
+  const task = pendingAction.value?.task
+  if (!task || actionBusy.value) return
+  actionBusy.value = true
+  actionError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/tasks/${task.id}`, {
+      method: 'DELETE',
+      headers: { Accept: 'application/json' },
+    })
+    if (!response.ok) throw new Error("Couldn't delete this task. Try again.")
+    const result = await response.json()
+
+    tasks.value = tasks.value.filter((item) => item.id !== task.id)
+    if (selectedTaskId.value === task.id) {
+      selectedTaskId.value = null
+      activeView.value = taskReturnView.value
+    }
+    await loadProjects()
+    actionDialog.value?.close()
+    pendingAction.value = null
+    if (result.project_empty) await offerEmptyProjectDeletion(result.project_id)
+  } catch (error) {
+    actionError.value = error.message || "Couldn't delete this task. Try again."
+  } finally {
+    actionBusy.value = false
+  }
+}
+
+async function deleteProject(taskAction) {
+  const project = pendingAction.value?.project
+  if (!project || actionBusy.value) return
+  actionBusy.value = true
+  actionError.value = ''
+
+  try {
+    const response = await fetch(`/api/v1/projects/${project.id}`, {
+      method: 'DELETE',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_action: taskAction }),
+    })
+    if (!response.ok) throw new Error("Couldn't delete this project. Try again.")
+
+    if (selectedProjectId.value === project.id) selectedProjectId.value = null
+    if (selectedTask.value?.project_id === project.id) selectedTaskId.value = null
+    projects.value = projects.value.filter((item) => item.id !== project.id)
+    if (taskAction === 'delete') {
+      tasks.value = tasks.value.filter((task) => task.project_id !== project.id)
+    } else {
+      tasks.value = tasks.value.map((task) => task.project_id === project.id ? { ...task, project_id: null, revision: task.revision + 1 } : task)
+    }
+    actionDialog.value?.close()
+    pendingAction.value = null
+    await loadTasks()
+  } catch (error) {
+    actionError.value = error.message || "Couldn't delete this project. Try again."
+  } finally {
+    actionBusy.value = false
   }
 }
 
@@ -868,11 +1117,13 @@ async function saveTask() {
   try {
     const isProject = entryKind.value === 'project'
     const taskInput = {
-      client_request_id: clientRequestIds[entryKind.value],
       title: taskForm.title.trim(),
       description: taskForm.description.trim() || null,
       dependency_ids: taskForm.dependency_ids.length ? [...taskForm.dependency_ids] : null,
     }
+    if (editingTaskId.value !== null) taskInput.revision = editingTaskRevision.value
+    else if (editingProjectId.value !== null) taskInput.revision = editingProjectRevision.value
+    else taskInput.client_request_id = clientRequestIds[entryKind.value]
 
     if (isProject) {
       taskInput.priority = taskForm.priority
@@ -906,8 +1157,11 @@ async function saveTask() {
       }
     }
 
-    const response = await fetch(isProject ? '/api/v1/projects' : '/api/v1/tasks', {
-      method: 'POST',
+    const saveUrl = isProject
+      ? (editingProjectId.value !== null ? `/api/v1/projects/${editingProjectId.value}` : '/api/v1/projects')
+      : (editingTaskId.value !== null ? `/api/v1/tasks/${editingTaskId.value}` : '/api/v1/tasks')
+    const response = await fetch(saveUrl, {
+      method: editingTaskId.value !== null || editingProjectId.value !== null ? 'PUT' : 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
@@ -917,6 +1171,11 @@ async function saveTask() {
     const result = await response.json()
 
     if (!response.ok) {
+      if (response.status === 409) {
+        if (isProject) await loadProjects()
+        else await loadTasks()
+        throw new Error(`This ${isProject ? 'project' : 'task'} changed since you opened it. Reopen it to edit the latest version.`)
+      }
       if (response.status === 422 && result.errors) {
         replaceFieldErrors(mapServerErrors(result.errors))
         if (Object.keys(fieldErrors).length) {
@@ -934,7 +1193,10 @@ async function saveTask() {
       activeView.value = 'projects'
     } else {
       tasks.value = [result.data, ...tasks.value.filter((task) => task.id !== result.data.id)]
-      if (savedProjectId !== null) {
+      if (editingTaskId.value !== null) {
+        selectedTaskId.value = result.data.id
+        activeView.value = 'tasks'
+      } else if (savedProjectId !== null) {
         selectedProjectId.value = savedProjectId
         activeView.value = 'projects'
       } else {
@@ -942,6 +1204,10 @@ async function saveTask() {
         activeView.value = 'tasks'
       }
     }
+    editingTaskId.value = null
+    editingTaskRevision.value = null
+    editingProjectId.value = null
+    editingProjectRevision.value = null
     resetCaptureForm()
     clientRequestIds[entryKind.value] = crypto.randomUUID()
   } catch (error) {
@@ -1018,8 +1284,14 @@ onBeforeUnmount(() => {
       <template v-else-if="activeView === 'tasks'">
         <template v-if="selectedTask">
           <header class="task-detail-heading">
-            <button class="project-back" type="button" @click="closeTaskDetails">← {{ taskReturnView === 'projects' ? 'Project' : 'Tasks' }}</button>
-            <h1>{{ selectedTask.title }}</h1>
+            <div class="task-detail-actions">
+              <button class="project-back" type="button" @click="closeTaskDetails">← {{ taskReturnView === 'projects' ? 'Project' : 'Tasks' }}</button>
+              <button v-if="selectedTask.lifecycle_state === 'active'" class="task-edit-button" type="button" @click="openTaskEdit(selectedTask)">Edit</button>
+            </div>
+            <div class="task-detail-title">
+              <h1>{{ selectedTask.title }}</h1>
+              <span v-if="selectedTask.lifecycle_state === 'completed'" class="task-completed-badge">Completed</span>
+            </div>
           </header>
           <section class="task-detail" aria-label="Task details">
             <p v-if="selectedTask.description" class="task-detail-description">{{ selectedTask.description }}</p>
@@ -1035,6 +1307,14 @@ onBeforeUnmount(() => {
               <div v-if="selectedTask.deadline_on"><dt>Deadline</dt><dd>{{ formatDeadline(selectedTask.deadline_on) }} · {{ selectedTask.deadline_is_hard ? 'Hard' : 'Soft' }}</dd></div>
               <div v-if="selectedTask.dependencies?.length"><dt>Dependencies</dt><dd>{{ selectedTask.dependencies.map((dependency) => dependency.title).join(', ') }}</dd></div>
             </dl>
+            <div class="task-detail-controls">
+              <button v-if="selectedTask.project_id && selectedTask.lifecycle_state === 'active'" class="task-remove-button" type="button"
+                :disabled="removingTaskId !== null" @click="removeTaskFromProject(selectedTask)">
+                {{ removingTaskId === selectedTask.id ? 'Removing…' : 'Remove from project' }}
+              </button>
+              <button class="task-delete-button" type="button" @click="openTaskDelete(selectedTask)">Delete task</button>
+            </div>
+            <p v-if="removalError" class="form-error" role="alert">{{ removalError }}</p>
           </section>
         </template>
         <template v-else>
@@ -1048,17 +1328,17 @@ onBeforeUnmount(() => {
               <span>Add task</span>
             </button>
           </header>
-          <section v-if="tasks.length > 0" class="task-list-controls" aria-label="Find and sort tasks">
+          <section class="task-list-controls" aria-label="Find and sort tasks">
             <label class="task-list-search">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="1.8" /><path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
               <span class="visually-hidden">Search task titles and descriptions</span>
               <input v-model="taskSearch" type="search" placeholder="Search tasks" />
             </label>
-            <button ref="taskFilterTrigger" class="task-filter-button" :class="{ 'is-active': taskTypeFilter !== 'all' || taskSort !== 'newest' }"
+            <button ref="taskFilterTrigger" class="task-filter-button" :class="{ 'is-active': taskTypeFilter !== 'all' || taskSort !== 'newest' || showCompleted }"
               type="button" aria-label="Filter and sort tasks" aria-haspopup="dialog" :aria-expanded="taskFiltersOpen" @click="openTaskFilters">
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M7 12h10m-7 5h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
               <span>Filter</span>
-              <span v-if="taskTypeFilter !== 'all' || taskSort !== 'newest'" class="task-filter-dot" aria-hidden="true"></span>
+              <span v-if="taskTypeFilter !== 'all' || taskSort !== 'newest' || showCompleted" class="task-filter-dot" aria-hidden="true"></span>
             </button>
             <button class="task-overdue-filter" type="button" :aria-pressed="overdueOnly" @click="overdueOnly = !overdueOnly">Overdue</button>
           </section>
@@ -1090,6 +1370,12 @@ onBeforeUnmount(() => {
                   </button>
                 </div>
               </div>
+              <div class="task-filter-section">
+                <button class="task-completed-toggle" type="button" role="switch" :aria-checked="showCompleted" @click="showCompleted = !showCompleted">
+                  <span>Show completed</span>
+                  <span class="task-toggle-track" aria-hidden="true"><span class="task-toggle-thumb"></span></span>
+                </button>
+              </div>
             </div>
           </dialog>
           <section class="task-list task-list-main" aria-label="Saved tasks">
@@ -1098,14 +1384,14 @@ onBeforeUnmount(() => {
               <p>{{ tasksError }}</p>
               <button type="button" @click="loadTasks">Try again</button>
             </div>
-            <p v-else-if="tasks.length === 0" class="list-message">No tasks saved yet.</p>
+            <p v-else-if="tasks.length === 0" class="list-message">{{ showCompleted ? 'No tasks saved yet.' : 'No active tasks.' }}</p>
             <div v-else-if="visibleTasks.length === 0" class="list-message">
               <p>{{ overdueOnly && taskTypeFilter === 'all' && !taskSearch.trim() ? 'No overdue tasks.' : 'No matching tasks.' }}</p>
               <button type="button" @click="resetTaskListView">Reset view</button>
             </div>
             <ul v-else>
-              <li v-for="task in visibleTasks" :key="task.id">
-                <button class="task-row" :class="{ 'has-hard-deadline': task.deadline_on && task.deadline_is_hard, 'is-overdue': isOverdue(task) }"
+              <li v-for="task in visibleTasks" :key="task.id" class="task-list-item">
+                <button class="task-row" :class="{ 'has-hard-deadline': task.lifecycle_state === 'active' && task.deadline_on && task.deadline_is_hard, 'is-overdue': isOverdue(task), 'is-completed': task.lifecycle_state === 'completed' }"
                   type="button" @click="openTaskDetails(task)">
                   <span class="task-row-copy">
                     <strong>{{ task.title }}</strong>
@@ -1114,6 +1400,7 @@ onBeforeUnmount(() => {
                       <span class="task-row-description-text">{{ task.description }}</span>
                     </span>
                     <span class="task-row-facts">
+                      <span v-if="task.lifecycle_state === 'completed'" class="task-completed-badge">Completed</span>
                       <span class="task-row-type" :class="task.type === 'day' ? 'is-day' : 'is-evening'">{{ task.type === 'day' ? 'Day' : 'Evening' }}</span>
                       <span v-if="task.project_id" class="task-row-fact">
                         <span class="task-row-label">Project</span>
@@ -1133,7 +1420,9 @@ onBeforeUnmount(() => {
                       </span>
                     </span>
                   </span>
-                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 5 7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                </button>
+                <button class="task-row-delete" type="button" :aria-label="`Delete task: ${task.title}`" @click="openTaskDelete(task)">
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m3 0-.7 12H6.7L6 7m4 3v6m4-6v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
                 </button>
               </li>
             </ul>
@@ -1143,13 +1432,13 @@ onBeforeUnmount(() => {
 
       <template v-else-if="activeView === 'capture'">
         <header class="capture-heading">
-          <button class="project-back" type="button" @click="entryKind === 'project' ? showProjects() : showTasks()">← {{ entryKind === 'project' ? 'Projects' : 'Tasks' }}</button>
-          <h1>New {{ entryKind }}</h1>
+          <button class="project-back" type="button" @click="cancelCapture">← {{ editingTaskId !== null ? 'Task' : entryKind === 'project' ? 'Projects' : 'Tasks' }}</button>
+          <h1>{{ editingTaskId !== null ? 'Edit task' : editingProjectId !== null ? 'Edit project' : `New ${entryKind}` }}</h1>
         </header>
 
-        <section class="task-panel" :aria-label="entryKind === 'project' ? 'Add a project' : 'Add a task'">
+        <section class="task-panel" :aria-label="editingTaskId !== null ? 'Edit task' : editingProjectId !== null ? 'Edit project' : entryKind === 'project' ? 'Add a project' : 'Add a task'">
           <form class="task-form" novalidate @submit.prevent="saveTask">
-            <div class="capture-kind" role="group" aria-label="Add">
+            <div v-if="editingTaskId === null && editingProjectId === null" class="capture-kind" role="group" aria-label="Add">
               <button type="button" :aria-pressed="entryKind === 'task'" @click="setEntryKind('task')">Task</button>
               <button type="button" :aria-pressed="entryKind === 'project'" @click="setEntryKind('project')">Project</button>
             </div>
@@ -1189,7 +1478,7 @@ onBeforeUnmount(() => {
             <p v-if="saveError" class="form-error" role="alert">{{ saveError }}</p>
             <p v-if="saveMessage" class="form-success" role="status">{{ saveMessage }}</p>
             <button class="primary-button" type="submit" :disabled="isSaving">
-              {{ isSaving ? 'Saving…' : entryKind === 'project' ? 'Save project' : 'Save task' }}
+              {{ isSaving ? 'Saving…' : editingTaskId !== null || editingProjectId !== null ? 'Save changes' : entryKind === 'project' ? 'Save project' : 'Save task' }}
             </button>
           </form>
 
@@ -1524,6 +1813,10 @@ onBeforeUnmount(() => {
         <header class="projects-heading">
           <button v-if="selectedProject" class="project-back" type="button" @click="selectedProjectId = null">← Projects</button>
           <h1>{{ selectedProject?.title || 'Projects' }}</h1>
+          <div v-if="selectedProject" class="project-detail-actions">
+            <button class="project-detail-edit" type="button" @click="openProjectEdit(selectedProject)">Edit</button>
+            <button class="project-detail-delete" type="button" @click="openProjectDelete(selectedProject)">Delete</button>
+          </div>
           <button v-if="!selectedProject" class="collection-add" type="button" @click="openProjectForm">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
             <span>New project</span>
@@ -1589,6 +1882,7 @@ onBeforeUnmount(() => {
 
           <section class="task-list" aria-labelledby="project-tasks-title">
             <div class="list-heading"><h2 id="project-tasks-title">Tasks</h2></div>
+            <p v-if="removalError" class="form-error" role="alert">{{ removalError }}</p>
             <p v-if="tasksLoading" class="list-message">Loading tasks…</p>
             <p v-else-if="tasksError" class="list-message">Tasks couldn't be loaded.</p>
             <p v-else-if="projectSteps.length === 0" class="list-message">No tasks in this project yet.</p>
@@ -1600,11 +1894,20 @@ onBeforeUnmount(() => {
                   <p v-if="task.description" class="task-description">{{ task.description }}</p>
                   <p v-if="task.dependencies?.length" class="task-dependencies">{{ task.dependencies_complete ? 'Dependencies done' : 'Waiting for' }}: {{ task.dependencies.map((dependency) => dependency.title).join(', ') }}</p>
                 </div>
-                <p class="task-meta">
-                  <span :class="task.type === 'day' ? 'tag-day' : 'tag-evening'">{{ task.type === 'day' ? 'Day' : 'Evening' }}</span>
-                  <span v-if="task.is_multi_session" class="tag-multi-session">Multi-session</span>
-                  <span v-if="task.deadline_on" :class="task.deadline_is_hard ? 'tag-deadline-hard' : 'tag-deadline-soft'">{{ formatDeadline(task.deadline_on) }}</span>
-                </p>
+                <div class="project-step-footer">
+                  <p class="task-meta">
+                    <span :class="task.type === 'day' ? 'tag-day' : 'tag-evening'">{{ task.type === 'day' ? 'Day' : 'Evening' }}</span>
+                    <span v-if="task.is_multi_session" class="tag-multi-session">Multi-session</span>
+                    <span v-if="task.deadline_on" :class="task.deadline_is_hard ? 'tag-deadline-hard' : 'tag-deadline-soft'">{{ formatDeadline(task.deadline_on) }}</span>
+                  </p>
+                  <div class="project-step-actions">
+                    <button class="project-step-remove" type="button" :disabled="removingTaskId !== null"
+                      :aria-label="`Remove ${task.title} from project`" @click="removeTaskFromProject(task)">
+                      {{ removingTaskId === task.id ? 'Removing…' : 'Remove' }}
+                    </button>
+                    <button class="project-step-delete" type="button" :aria-label="`Delete task: ${task.title}`" @click="openTaskDelete(task)">Delete</button>
+                  </div>
+                </div>
               </li>
             </ul>
           </section>
@@ -1618,17 +1921,48 @@ onBeforeUnmount(() => {
           </div>
           <p v-else-if="projects.length === 0" class="list-message">No projects saved yet.</p>
           <div v-else class="project-grid">
-            <button v-for="project in projects" :key="project.id" class="project-card" type="button" @click="selectedProjectId = project.id">
-              <span class="project-card-title">{{ project.title }}</span>
-              <span class="project-card-meta">
-                {{ tasks.filter((task) => task.project_id === project.id).length }} {{ tasks.filter((task) => task.project_id === project.id).length === 1 ? 'task' : 'tasks' }}
-                <span v-if="project.deadline_on"> · Due {{ formatDeadline(project.deadline_on) }}</span>
-              </span>
-            </button>
+            <div v-for="project in projects" :key="project.id" class="project-list-item">
+              <button class="project-card" type="button" @click="selectedProjectId = project.id">
+                <span class="project-card-title">{{ project.title }}</span>
+                <span class="project-card-meta">
+                  {{ project.steps_count ?? 0 }} {{ project.steps_count === 1 ? 'task' : 'tasks' }}
+                  <span v-if="project.deadline_on"> · Due {{ formatDeadline(project.deadline_on) }}</span>
+                </span>
+              </button>
+              <button class="project-row-delete" type="button" :aria-label="`Delete project: ${project.title}`" @click="openProjectDelete(project)">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7h16M9 7V5h6v2m3 0-.7 12H6.7L6 7m4 3v6m4-6v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              </button>
+            </div>
           </div>
         </template>
       </template>
     </main>
+
+    <dialog ref="actionDialog" class="options-sheet action-sheet" aria-labelledby="action-sheet-title" @click.self="closeActionDialog" @cancel="actionBusy && $event.preventDefault()">
+      <header class="options-sheet-header">
+        <h2 id="action-sheet-title">{{ pendingAction?.kind === 'delete-task' ? 'Delete task?' : pendingAction?.kind === 'empty-project' ? 'Delete empty project?' : 'Delete project?' }}</h2>
+      </header>
+      <div class="options-sheet-body action-sheet-body">
+        <p v-if="pendingAction?.kind === 'delete-task'">Delete “{{ pendingAction.task.title }}” permanently?</p>
+        <p v-else-if="pendingAction?.kind === 'empty-project'">“{{ pendingAction.project.title }}” has no tasks left. Delete it too?</p>
+        <p v-else-if="pendingAction?.kind === 'delete-empty-project'">Delete “{{ pendingAction.project.title }}” permanently?</p>
+        <p v-else-if="pendingAction?.kind === 'delete-project'">What should happen to the {{ pendingAction.project.steps_count ?? 0 }} {{ pendingAction.project.steps_count === 1 ? 'task' : 'tasks' }} in “{{ pendingAction.project.title }}”?</p>
+        <p v-if="actionError" class="form-error" role="alert">{{ actionError }}</p>
+        <div class="action-sheet-buttons">
+          <template v-if="pendingAction?.kind === 'delete-task'">
+            <button class="action-destructive" type="button" :disabled="actionBusy" @click="deleteTask">{{ actionBusy ? 'Deleting…' : 'Delete task' }}</button>
+          </template>
+          <template v-else-if="pendingAction?.kind === 'delete-project'">
+            <button class="action-preserve" type="button" :disabled="actionBusy" @click="deleteProject('detach')">Keep tasks, delete project</button>
+            <button class="action-destructive" type="button" :disabled="actionBusy" @click="deleteProject('delete')">Delete project and tasks</button>
+          </template>
+          <template v-else-if="pendingAction?.kind === 'empty-project' || pendingAction?.kind === 'delete-empty-project'">
+            <button class="action-destructive" type="button" :disabled="actionBusy" @click="deleteProject('detach')">{{ actionBusy ? 'Deleting…' : 'Delete project' }}</button>
+          </template>
+          <button class="action-cancel" type="button" :disabled="actionBusy" @click="closeActionDialog">{{ pendingAction?.kind === 'empty-project' ? 'Keep project' : 'Cancel' }}</button>
+        </div>
+      </div>
+    </dialog>
 
     <nav class="main-nav" aria-label="Main navigation">
       <button type="button" :aria-pressed="activeView === 'tomorrow'" @click="activeView = 'tomorrow'">

@@ -63,6 +63,7 @@ class Task extends Model
             'is_multi_session' => 'boolean',
             'advance_notice_days' => 'integer',
             'day_preference_is_hard' => 'boolean',
+            'revision' => 'integer',
             'deadline_on' => 'date:Y-m-d',
             'deadline_is_hard' => 'boolean',
         ];
