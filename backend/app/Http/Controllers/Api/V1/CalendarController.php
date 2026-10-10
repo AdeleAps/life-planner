@@ -4,10 +4,13 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\DayOffPeriodResource;
+use App\Http\Resources\ScheduledTaskResource;
 use App\Models\DayOffPeriod;
+use App\Models\ScheduledTask;
 use App\Services\DayOffCalendar;
 use App\Services\LatvianHolidaySync;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
@@ -39,11 +42,30 @@ class CalendarController extends Controller
             ->where('start_on', '<=', $lastDate->toDateString())
             ->where('end_on', '>=', $firstDate->toDateString())
             ->orderBy('start_on')->get();
+        $tomorrowDate = CarbonImmutable::now('Europe/Riga')->addDay()->toDateString();
+        $scheduledTasksByDate = ScheduledTask::query()
+            ->whereBetween('plan_date', [$firstDate->toDateString(), $lastDate->toDateString()])
+            ->where(function (Builder $query) use ($tomorrowDate): void {
+                $query->where('plan_date', '<=', $tomorrowDate)
+                    ->orWhereIn('source', ['manual', 'dinner_groceries', 'dinner_cooking', 'advance_accepted']);
+            })
+            ->with('task:id,title,type,recurrence_type,is_multi_session,lifecycle_state,revision')
+            ->orderBy('id')
+            ->get()
+            ->groupBy('plan_date');
+        $days = $calendar->days($firstDate, $lastDate)
+            ->map(function (array $day) use ($scheduledTasksByDate): array {
+                $day['scheduled_tasks'] = ScheduledTaskResource::collection(
+                    $scheduledTasksByDate->get($day['date'], collect())
+                )->resolve();
+
+                return $day;
+            });
 
         return response()->json([
             'month' => $month,
             'holiday_year_synced' => $holidayYearSynced,
-            'days' => $calendar->days($firstDate, $lastDate)->values()->all(),
+            'days' => $days->values()->all(),
             'personal_days_off' => DayOffPeriodResource::collection($personalPeriods)->resolve(),
         ]);
     }

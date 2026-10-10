@@ -28,6 +28,17 @@ const monthLabel = computed(() => new Intl.DateTimeFormat(undefined, { month: 'l
   .format(dateFromKey(`${visibleMonth.value}-01`)))
 const selectedLabel = computed(() => new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
   .format(dateFromKey(selectedDate.value)))
+
+function taskProgress(day) {
+  const tasks = day.scheduled_tasks || []
+  const done = tasks.filter((task) => task.status === 'completed').length
+
+  if (day.date > today) return { tone: 'upcoming', label: 'upcoming' }
+  if (done === 0) return { tone: 'none-done', label: 'none done' }
+  if (done === tasks.length) return { tone: 'all-done', label: 'all done' }
+  return { tone: 'some-done', label: `${done} of ${tasks.length} done` }
+}
+
 const calendarCells = computed(() => {
   const [year, month] = visibleMonth.value.split('-').map(Number)
   const firstWeekday = (new Date(year, month - 1, 1, 12).getDay() + 6) % 7
@@ -36,7 +47,7 @@ const calendarCells = computed(() => {
     ...Array.from({ length: firstWeekday }, () => null),
     ...Array.from({ length: count }, (_, index) => {
       const key = `${visibleMonth.value}-${String(index + 1).padStart(2, '0')}`
-      return dayByDate.value.get(key) || { date: key, is_weekend: false, is_day_off: false, holiday_names: [], personal_days_off: [] }
+      return dayByDate.value.get(key) || { date: key, is_weekend: false, is_day_off: false, holiday_names: [], personal_days_off: [], scheduled_tasks: [] }
     }),
   ]
 })
@@ -141,10 +152,11 @@ onMounted(loadMonth)
         <template v-for="(day, index) in calendarCells" :key="day?.date || `blank-${index}`">
           <span v-if="!day" aria-hidden="true"></span>
           <button v-else type="button" class="days-calendar-day"
-      :class="{ 'is-selected': day.date === selectedDate, 'is-today': day.date === today, 'is-national': day.holiday_names.length, 'is-personal': day.personal_days_off.length, 'is-goon': day.goon_mode, 'is-weekend': day.is_weekend }"
-            :aria-pressed="day.date === selectedDate" :aria-label="`${day.date}${day.holiday_names.length ? `, ${day.holiday_names.join(', ')}` : ''}${day.personal_days_off.length ? ', personal days off' : ''}${day.goon_mode ? ', Goon mode' : ''}`"
+            :class="[{ 'is-selected': day.date === selectedDate, 'is-today': day.date === today, 'is-national': day.holiday_names.length, 'is-personal': day.personal_days_off.length, 'is-goon': day.goon_mode, 'is-weekend': day.is_weekend }, day.scheduled_tasks?.length ? `is-task-${taskProgress(day).tone}` : '']"
+            :aria-pressed="day.date === selectedDate" :aria-label="`${day.date}${day.holiday_names.length ? `, ${day.holiday_names.join(', ')}` : ''}${day.personal_days_off.length ? ', personal days off' : ''}${day.goon_mode ? ', Goon mode' : ''}${day.scheduled_tasks?.length ? `, ${day.scheduled_tasks.length} scheduled ${day.scheduled_tasks.length === 1 ? 'task' : 'tasks'}, ${taskProgress(day).label}` : ''}`"
             @click="selectedDate = day.date">
-            <span>{{ Number(day.date.slice(-2)) }}</span>
+            <span class="days-calendar-number">{{ Number(day.date.slice(-2)) }}</span>
+            <span v-if="day.scheduled_tasks?.length" class="days-calendar-task-count" aria-hidden="true">{{ day.scheduled_tasks.length }}</span>
             <i v-if="day.holiday_names.length || day.personal_days_off.length" aria-hidden="true"></i>
           </button>
         </template>
@@ -163,6 +175,15 @@ onMounted(loadMonth)
             <button type="button" :disabled="saving" :aria-label="`Edit ${period.title}`" @click="openDayOffForm(period)">Edit</button>
             <button type="button" :disabled="saving" :aria-label="`Remove ${period.title}`" @click="removeDayOff(period)">Remove</button>
           </span>
+        </div>
+        <div v-if="selectedDay.scheduled_tasks?.length" class="days-calendar-tasks">
+          <h3>Tasks</h3>
+          <div v-for="assignment in selectedDay.scheduled_tasks" :key="assignment.id" class="days-calendar-task" :class="{ 'is-completed': assignment.status === 'completed' }">
+            <span class="days-calendar-task-title">{{ assignment.task.title }}</span>
+            <span class="days-calendar-task-meta">
+              {{ assignment.task.type === 'day' ? 'Day' : 'Evening' }}<template v-if="assignment.status === 'completed'"> · Done</template><template v-else-if="assignment.status === 'not_completed'"> · Not done</template><template v-else-if="assignment.source === 'advance_accepted'"> · Accepted</template>
+            </span>
+          </div>
         </div>
       </template>
     </div>
@@ -210,8 +231,13 @@ onMounted(loadMonth)
 .days-calendar-day.is-national { background: var(--sun-soft); color: var(--ink); }
 .days-calendar-day.is-personal { background: #d9f4e8; color: var(--green-deep); }
 .days-calendar-day.is-goon { background: #ffe9d9; color: #79431f; }
+.days-calendar-day.is-task-all-done { background: #dff3e5; color: var(--ink); }
+.days-calendar-day.is-task-some-done { background: #fff1c8; color: var(--ink); }
+.days-calendar-day.is-task-none-done { background: #fbe8e5; color: var(--ink); }
+.days-calendar-day.is-task-upcoming { background: #eef3f0; color: var(--ink); }
 .days-calendar-day.is-selected { border-color: var(--green-deep); }
-.days-calendar-day.is-today span { text-decoration: underline; text-decoration-color: var(--green); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+.days-calendar-day.is-today .days-calendar-number { text-decoration: underline; text-decoration-color: var(--green); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+.days-calendar-task-count { position: absolute; top: 3px; right: 3px; display: grid; place-items: center; min-width: 17px; height: 17px; padding: 0 3px; border: 1px solid #d6e5db; border-radius: 9px; background: white; color: var(--ink); font-size: 10px; font-weight: 800; line-height: 1; }
 .days-calendar-day i { position: absolute; bottom: 4px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
 .days-calendar-selected { min-height: 128px; padding: 19px 21px; border: 1px solid var(--line); border-radius: 24px; background: white; box-shadow: var(--shadow); }
 .days-calendar-selected h2 { margin: 0 0 5px; font-size: 20px; letter-spacing: -.04em; }
@@ -221,6 +247,12 @@ onMounted(loadMonth)
 .days-calendar-event.personal { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--green-soft); }
 .days-calendar-event-actions { display: inline-flex; gap: 12px; }
 .days-calendar-event button { border: 0; background: transparent; color: var(--green-deep); font-size: 13px; font-weight: 750; cursor: pointer; }
+.days-calendar-tasks { display: grid; gap: 8px; margin-top: 17px; padding-top: 15px; border-top: 1px solid var(--line); }
+.days-calendar-tasks h3 { margin: 0 0 2px; font-size: 15px; }
+.days-calendar-task { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 11px 13px; border-radius: 12px; background: #f5f9f7; }
+.days-calendar-task.is-completed { color: var(--muted); }
+.days-calendar-task-title { min-width: 0; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.days-calendar-task-meta { flex: none; color: var(--muted); font-size: 12px; }
 .days-calendar-error { margin: 0; color: var(--error); font-size: 14px; }
 .days-calendar-error button { border: 0; background: transparent; color: inherit; font-weight: 750; text-decoration: underline; cursor: pointer; }
 .days-off-dialog[open] { position: fixed; z-index: 30; top: auto; right: 0; bottom: 0; left: 0; width: min(100%, 640px); max-width: none; max-height: min(90dvh, 700px); margin: 0 auto; padding: 0; border: 1px solid var(--line); border-radius: 25px 25px 0 0; background: white; color: var(--ink); box-shadow: 0 -18px 60px #12392d30; overflow: auto; }

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\HolidaySync;
+use App\Models\ScheduledTask;
 use App\Models\Task;
 use App\Services\LatvianHolidaySync;
 use App\Services\PlanningBriefBuilder;
@@ -93,6 +94,43 @@ class CalendarTest extends TestCase
         $this->assertSame('workday', collect($this->getJson('/api/v1/calendar?month=2026-11')->assertOk()->json('days'))
             ->firstWhere('date', '2026-11-23')['day_type']);
         $this->assertDatabaseCount('day_off_periods', 0);
+    }
+
+    public function test_calendar_shows_day_and_evening_assignments_without_exposing_tentative_future_plans(): void
+    {
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-10 12:00:00', 'Europe/Riga'));
+
+        try {
+            HolidaySync::factory()->create(['year' => 2026]);
+            $tomorrowTask = ScheduledTask::factory()->create([
+                'task_id' => Task::factory()->create(['title' => 'Read a chapter'])->id,
+                'plan_date' => '2026-10-11',
+            ]);
+            $acceptedTask = ScheduledTask::factory()->create([
+                'task_id' => Task::factory()->create(['title' => 'Hiking'])->id,
+                'plan_date' => '2026-10-17',
+                'source' => 'advance_accepted',
+            ]);
+            ScheduledTask::factory()->create([
+                'task_id' => Task::factory()->create(['title' => 'Hidden lookahead'])->id,
+                'plan_date' => '2026-10-17',
+            ]);
+            $dayTask = ScheduledTask::factory()->create([
+                'task_id' => Task::factory()->create(['title' => 'Groceries', 'type' => 'day', 'priority' => null, 'energy_cost' => null])->id,
+                'plan_date' => '2026-10-11',
+                'source' => 'manual',
+            ]);
+
+            $days = collect($this->getJson('/api/v1/calendar?month=2026-10')->assertOk()->json('days'))->keyBy('date');
+
+            $this->assertSame([$tomorrowTask->id, $dayTask->id], array_column($days['2026-10-11']['scheduled_tasks'], 'id'));
+            $this->assertSame('Read a chapter', $days['2026-10-11']['scheduled_tasks'][0]['task']['title']);
+            $this->assertSame('day', $days['2026-10-11']['scheduled_tasks'][1]['task']['type']);
+            $this->assertSame([$acceptedTask->id], array_column($days['2026-10-17']['scheduled_tasks'], 'id'));
+            $this->assertSame([], $days['2026-10-12']['scheduled_tasks']);
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
     }
 
     public function test_goon_mode_pauses_planning_and_can_be_edited_off(): void
