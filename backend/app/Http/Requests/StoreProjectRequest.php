@@ -38,6 +38,9 @@ class StoreProjectRequest extends FormRequest
             'recurrence_rule' => ['prohibited'],
             'project_id' => ['prohibited'],
             'is_multi_session' => ['prohibited'],
+            'advance_notice_days' => ['prohibited'],
+            'day_preference' => ['prohibited'],
+            'day_preference_is_hard' => ['prohibited'],
         ];
     }
 }

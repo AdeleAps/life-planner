@@ -117,6 +117,21 @@ class StoreTaskRequest extends FormRequest
                 Rule::prohibitedIf(! $isOneTimeEvening),
                 'boolean',
             ],
+            'advance_notice_days' => [
+                Rule::prohibitedIf($taskType !== 'evening'),
+                'nullable',
+                'integer',
+                'between:1,14',
+            ],
+            'day_preference' => [
+                Rule::prohibitedIf($taskType !== 'evening'),
+                'nullable',
+                Rule::in(['workday', 'non_workday']),
+            ],
+            'day_preference_is_hard' => [
+                Rule::prohibitedIf($taskType !== 'evening' || ! $this->filled('day_preference')),
+                'boolean',
+            ],
             'deadline_on' => [
                 Rule::prohibitedIf(! $isOneTimeEvening),
                 'nullable',

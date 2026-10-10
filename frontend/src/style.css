@@ -1595,6 +1595,19 @@ textarea:focus-visible {
   cursor: pointer;
 }
 
+.advance-notice-select {
+  max-width: 190px;
+}
+
+.day-preference-content {
+  display: grid;
+  gap: 15px;
+}
+
+.day-preference-select {
+  max-width: 220px;
+}
+
 .dependency-content {
   display: grid;
   gap: 10px;

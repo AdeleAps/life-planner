@@ -23,6 +23,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
     'recurrence_type',
     'recurrence_rule',
     'is_multi_session',
+    'advance_notice_days',
+    'day_preference',
+    'day_preference_is_hard',
     'deadline_on',
     'deadline_is_hard',
     'lifecycle_state',
@@ -58,6 +61,8 @@ class Task extends Model
         return [
             'recurrence_rule' => 'array',
             'is_multi_session' => 'boolean',
+            'advance_notice_days' => 'integer',
+            'day_preference_is_hard' => 'boolean',
             'deadline_on' => 'date:Y-m-d',
             'deadline_is_hard' => 'boolean',
         ];

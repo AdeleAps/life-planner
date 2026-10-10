@@ -36,6 +36,7 @@ class TaskController extends Controller
         $deadlineOn = $isOneTimeEvening
             ? ($input['deadline_on'] ?? null)
             : null;
+        $dayPreference = $taskType === 'evening' ? ($input['day_preference'] ?? null) : null;
 
         if ($recurrenceType === 'schedule') {
             $rule = $input['recurrence_rule'];
@@ -59,7 +60,7 @@ class TaskController extends Controller
             ];
         }
 
-        $task = DB::transaction(function () use ($input, $taskType, $recurrenceType, $recurrenceRule, $isOneTimeEvening, $deadlineOn): Task {
+        $task = DB::transaction(function () use ($input, $taskType, $recurrenceType, $recurrenceRule, $isOneTimeEvening, $deadlineOn, $dayPreference): Task {
             $task = Task::query()->firstOrCreate(
                 ['client_request_id' => $input['client_request_id']],
                 [
@@ -74,6 +75,9 @@ class TaskController extends Controller
                     'recurrence_type' => $recurrenceType,
                     'recurrence_rule' => $recurrenceRule,
                     'is_multi_session' => $isOneTimeEvening ? ($input['is_multi_session'] ?? false) : false,
+                    'advance_notice_days' => $taskType === 'evening' ? ($input['advance_notice_days'] ?? null) : null,
+                    'day_preference' => $dayPreference,
+                    'day_preference_is_hard' => $dayPreference === null ? null : ($input['day_preference_is_hard'] ?? false),
                     'deadline_on' => $deadlineOn,
                     'deadline_is_hard' => $deadlineOn === null ? null : ($input['deadline_is_hard'] ?? false),
                     'lifecycle_state' => 'active',

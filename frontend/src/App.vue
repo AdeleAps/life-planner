@@ -50,6 +50,10 @@ const energyDetail = ref(null)
 const priorityDetail = ref(null)
 const repeatDetail = ref(null)
 const multiSessionDetail = ref(null)
+const advanceNoticeDetail = ref(null)
+const advanceNoticeSelect = ref(null)
+const dayPreferenceDetail = ref(null)
+const dayPreferenceSelect = ref(null)
 const deadlineDetail = ref(null)
 const dependenciesDetail = ref(null)
 const projectDetail = ref(null)
@@ -154,6 +158,18 @@ const deadlineUnitOptions = [
   { value: 'month', label: 'Months' },
   { value: 'year', label: 'Years' },
 ]
+const advanceNoticeOptions = [
+  { value: null, label: 'None' },
+  ...Array.from({ length: 14 }, (_, index) => ({
+    value: index + 1,
+    label: `${index + 1} ${index === 0 ? 'day' : 'days'}`,
+  })),
+]
+const dayPreferenceOptions = [
+  { value: null, label: 'No preference' },
+  { value: 'workday', label: 'Workdays' },
+  { value: 'non_workday', label: 'Non-workdays' },
+]
 const monthDayOptions = Array.from({ length: 31 }, (_, index) => ({ value: index + 1, label: String(index + 1) }))
 
 function initialRepeatValues() {
@@ -192,6 +208,9 @@ const taskForm = reactive({
   priority: 'standard',
   recurrence_type: 'one_time',
   is_multi_session: false,
+  advance_notice_days: null,
+  day_preference: null,
+  day_preference_is_hard: false,
   dependency_ids: [],
   project_id: null,
 })
@@ -205,6 +224,9 @@ watch(() => taskForm.type, (type) => {
   taskForm.priority = type === 'evening' ? 'standard' : null
   if (type === 'day') {
     taskForm.is_multi_session = false
+    taskForm.advance_notice_days = null
+    taskForm.day_preference = null
+    taskForm.day_preference_is_hard = false
     resetDeadlineForm()
   }
 })
@@ -218,6 +240,12 @@ watch(() => taskForm.recurrence_type, (type) => {
 
 function priorityLabel(priority) {
   return priorityOptions.find((option) => option.value === priority)?.label || 'Standard'
+}
+
+function dayPreferenceLabel(preference, isHard) {
+  if (preference === null) return 'No preference'
+  const days = preference === 'workday' ? 'workdays' : 'non-workdays'
+  return isHard ? `${days[0].toUpperCase()}${days.slice(1)} only` : `Prefer ${days}`
 }
 
 function localDate(date) {
@@ -355,6 +383,8 @@ const optionsSummary = computed(() => {
   } else if (taskForm.type === 'evening') {
     if (taskForm.energy_cost === 'high') changes.push('High energy')
     if (taskForm.priority !== 'standard') changes.push(`${priorityLabel(taskForm.priority)} priority`)
+    if (taskForm.advance_notice_days !== null) changes.push(`${taskForm.advance_notice_days}-day notice`)
+    if (taskForm.day_preference !== null) changes.push(dayPreferenceLabel(taskForm.day_preference, taskForm.day_preference_is_hard))
   }
   if (entryKind.value === 'task' && taskForm.recurrence_type !== 'one_time') changes.push(repeatLabel(taskForm.recurrence_type, currentRepeatRule()))
   if (entryKind.value === 'project' || (taskForm.type === 'evening' && taskForm.recurrence_type === 'one_time')) {
@@ -418,6 +448,14 @@ function validateTaskForm() {
   if (taskForm.project_id !== null && taskForm.recurrence_type !== 'one_time') {
     errors.project = 'Project steps must be one-time.'
   }
+  if (taskForm.type === 'evening' && taskForm.advance_notice_days !== null
+    && !validWholeNumber(taskForm.advance_notice_days, 1, 14)) {
+    errors.advance_notice = 'Choose 1–14 days.'
+  }
+  if (taskForm.type === 'evening' && taskForm.day_preference !== null
+    && !['workday', 'non_workday'].includes(taskForm.day_preference)) {
+    errors.day_preference = 'Choose a day type.'
+  }
 
   if (taskForm.recurrence_type === 'one_time') {
     if (taskForm.type === 'evening' && deadlineForm.mode === 'date' && !validDate(deadlineForm.date)) {
@@ -480,6 +518,11 @@ function clearDeadlineErrors() {
   for (const field of deadlineErrorFields) delete fieldErrors[field]
 }
 
+function onDayPreferenceChange(value) {
+  if (value === null) taskForm.day_preference_is_hard = false
+  clearFieldError('day_preference')
+}
+
 function resetDeadlineForm() {
   Object.assign(deadlineForm, initialDeadlineValues())
   clearDeadlineErrors()
@@ -509,6 +552,9 @@ function mapServerErrors(errors) {
     priority: ['priority', 'Choose a priority.'],
     project_id: ['project', 'Choose an active project.'],
     is_multi_session: ['sessions', 'Check sessions.'],
+    advance_notice_days: ['advance_notice', 'Choose 1–14 days.'],
+    day_preference: ['day_preference', 'Choose a day type.'],
+    day_preference_is_hard: ['day_preference', 'Check the day preference.'],
     dependency_ids: ['dependencies', 'Check dependencies.'],
     'dependency_ids.*': ['dependencies', 'Choose saved tasks.'],
     deadline_on: deadlineForm.mode === 'date'
@@ -543,6 +589,8 @@ async function focusFirstError() {
   if (firstField === 'priority' && priorityDetail.value) priorityDetail.value.open = true
   else if (firstField === 'project' && projectDetail.value) projectDetail.value.open = true
   else if (firstField === 'sessions' && multiSessionDetail.value) multiSessionDetail.value.open = true
+  else if (firstField === 'advance_notice' && advanceNoticeDetail.value) advanceNoticeDetail.value.open = true
+  else if (firstField === 'day_preference' && dayPreferenceDetail.value) dayPreferenceDetail.value.open = true
   else if (firstField === 'dependencies' && dependenciesDetail.value) dependenciesDetail.value.open = true
   else if (deadlineHasError.value && deadlineDetail.value) deadlineDetail.value.open = true
   else if (repeatHasError.value && repeatDetail.value) repeatDetail.value.open = true
@@ -553,6 +601,8 @@ async function focusFirstError() {
     priority: priorityDetail.value?.querySelector('summary'),
     project: projectDetail.value?.querySelector('summary'),
     sessions: multiSessionDetail.value?.querySelector('summary'),
+    advance_notice: advanceNoticeSelect.value || advanceNoticeDetail.value?.querySelector('summary'),
+    day_preference: dayPreferenceSelect.value || dayPreferenceDetail.value?.querySelector('summary'),
     dependencies: dependencySearchInput.value || dependenciesDetail.value?.querySelector('summary'),
     deadline: deadlineDetail.value?.querySelector('summary'),
     deadline_date: deadlineDateInput.value,
@@ -752,7 +802,7 @@ async function addExistingTaskToProject(task) {
 function closeOtherDetails(event) {
   if (!event.target.open) return
 
-  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, deadlineDetail.value, projectDetail.value, dependenciesDetail.value, contextDetail.value]) {
+  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, advanceNoticeDetail.value, dayPreferenceDetail.value, deadlineDetail.value, projectDetail.value, dependenciesDetail.value, contextDetail.value]) {
     if (detail && detail !== event.target) detail.open = false
   }
 }
@@ -774,7 +824,7 @@ function finishPriorityChoice() {
 }
 
 function closeAllDetails() {
-  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, deadlineDetail.value, projectDetail.value, dependenciesDetail.value, contextDetail.value]) {
+  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, advanceNoticeDetail.value, dayPreferenceDetail.value, deadlineDetail.value, projectDetail.value, dependenciesDetail.value, contextDetail.value]) {
     if (detail) detail.open = false
   }
 }
@@ -787,6 +837,9 @@ function resetCaptureForm() {
   taskForm.priority = 'standard'
   taskForm.recurrence_type = 'one_time'
   taskForm.is_multi_session = false
+  taskForm.advance_notice_days = null
+  taskForm.day_preference = null
+  taskForm.day_preference_is_hard = false
   taskForm.dependency_ids = []
   taskForm.project_id = null
   dependencySearch.value = ''
@@ -835,6 +888,11 @@ async function saveTask() {
       if (taskForm.type === 'evening') {
         taskInput.energy_cost = taskForm.energy_cost
         taskInput.priority = taskForm.priority
+        taskInput.advance_notice_days = taskForm.advance_notice_days
+        if (taskForm.day_preference !== null) {
+          taskInput.day_preference = taskForm.day_preference
+          taskInput.day_preference_is_hard = taskForm.day_preference_is_hard
+        }
       }
 
       if (taskForm.recurrence_type !== 'one_time') {
@@ -972,6 +1030,8 @@ onBeforeUnmount(() => {
               <div v-if="selectedTask.type === 'evening'"><dt>Priority</dt><dd>{{ priorityLabel(selectedTask.priority) }}</dd></div>
               <div><dt>Repeat</dt><dd>{{ repeatLabel(selectedTask.recurrence_type, selectedTask.recurrence_rule) }}</dd></div>
               <div v-if="selectedTask.is_multi_session"><dt>Sessions</dt><dd>Multi-session</dd></div>
+              <div v-if="selectedTask.advance_notice_days"><dt>Advance notice</dt><dd>{{ selectedTask.advance_notice_days }} {{ selectedTask.advance_notice_days === 1 ? 'day' : 'days' }}</dd></div>
+              <div v-if="selectedTask.day_preference"><dt>Day preference</dt><dd>{{ dayPreferenceLabel(selectedTask.day_preference, selectedTask.day_preference_is_hard) }}</dd></div>
               <div v-if="selectedTask.deadline_on"><dt>Deadline</dt><dd>{{ formatDeadline(selectedTask.deadline_on) }} · {{ selectedTask.deadline_is_hard ? 'Hard' : 'Soft' }}</dd></div>
               <div v-if="selectedTask.dependencies?.length"><dt>Dependencies</dt><dd>{{ selectedTask.dependencies.map((dependency) => dependency.title).join(', ') }}</dd></div>
             </dl>
@@ -1005,7 +1065,7 @@ onBeforeUnmount(() => {
           <dialog ref="taskFilterDialog" class="options-sheet task-filter-sheet" aria-labelledby="task-filter-title"
             @click.self="closeTaskFilters" @close="onTaskFiltersClose">
             <header class="options-sheet-header task-filter-heading">
-              <h2 id="task-filter-title">Filter &amp; sort</h2>
+              <h2 id="task-filter-title">Filter &amp; Sort</h2>
               <div class="task-filter-heading-actions">
                 <button v-if="hasTaskListFilters" class="task-filter-clear" type="button" @click="clearTaskListFilters">Clear all</button>
                 <button class="project-task-picker-close" type="button" aria-label="Close" @click="closeTaskFilters">×</button>
@@ -1288,6 +1348,42 @@ onBeforeUnmount(() => {
                       <input v-model="taskForm.is_multi_session" type="checkbox" />
                       <span>Keep this task active until marked Completed</span>
                     </label>
+                  </div>
+                </details>
+
+                <details v-if="entryKind === 'task' && taskForm.type === 'evening'" ref="advanceNoticeDetail" class="form-detail" :class="{ 'has-error': fieldErrors.advance_notice }" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Advance notice</span>
+                    <span class="detail-value">{{ taskForm.advance_notice_days === null ? 'None' : `${taskForm.advance_notice_days} ${taskForm.advance_notice_days === 1 ? 'day' : 'days'}` }}</span>
+                  </summary>
+                  <div class="detail-content">
+                    <div class="advance-notice-select">
+                      <PlannerSelect ref="advanceNoticeSelect" v-model="taskForm.advance_notice_days" :options="advanceNoticeOptions"
+                        label="Advance notice" :invalid="Boolean(fieldErrors.advance_notice)"
+                        :described-by="fieldErrors.advance_notice ? 'advance-notice-error' : undefined"
+                        @change="clearFieldError('advance_notice')" />
+                    </div>
+                    <p v-if="fieldErrors.advance_notice" id="advance-notice-error" class="field-error">{{ fieldErrors.advance_notice }}</p>
+                  </div>
+                </details>
+
+                <details v-if="entryKind === 'task' && taskForm.type === 'evening'" ref="dayPreferenceDetail" class="form-detail" :class="{ 'has-error': fieldErrors.day_preference }" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Day preference</span>
+                    <span class="detail-value">{{ dayPreferenceLabel(taskForm.day_preference, taskForm.day_preference_is_hard) }}</span>
+                  </summary>
+                  <div class="detail-content day-preference-content">
+                    <div class="day-preference-select">
+                      <PlannerSelect ref="dayPreferenceSelect" v-model="taskForm.day_preference" :options="dayPreferenceOptions"
+                        label="Day preference" :invalid="Boolean(fieldErrors.day_preference)"
+                        :described-by="fieldErrors.day_preference ? 'day-preference-error' : undefined"
+                        @change="onDayPreferenceChange" />
+                    </div>
+                    <label v-if="taskForm.day_preference !== null" class="session-option">
+                      <input v-model="taskForm.day_preference_is_hard" type="checkbox" @change="clearFieldError('day_preference')" />
+                      <span>Hard: only on these days</span>
+                    </label>
+                    <p v-if="fieldErrors.day_preference" id="day-preference-error" class="field-error">{{ fieldErrors.day_preference }}</p>
                   </div>
                 </details>
 
