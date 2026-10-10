@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\PlanningDayInput;
+use App\Models\PlanningFocus;
 use App\Models\ScheduledTask;
 use App\Models\Task;
 use App\Models\TaskCompletion;
@@ -25,6 +26,12 @@ class PlanningBriefBuilder
         $lastDate = $targetDate->addDays(13);
         $today = CarbonImmutable::now('Europe/Riga')->startOfDay();
         $calendarDays = $this->dayOffCalendar->days($targetDate, $lastDate);
+        $focuses = PlanningFocus::query()
+            ->whereNotNull('focus')
+            ->where('starts_on', '>=', $targetDate->subMonth()->startOfMonth()->toDateString())
+            ->where('starts_on', '<=', $lastDate->toDateString())
+            ->orderBy('starts_on')->get()
+            ->filter(fn (PlanningFocus $focus): bool => $focus->periodEnd()->greaterThanOrEqualTo($targetDate));
 
         $inputs = PlanningDayInput::query()
             ->whereBetween('plan_date', [$targetDate->toDateString(), $lastDate->toDateString()])
@@ -92,7 +99,14 @@ class PlanningBriefBuilder
                 'Prefer one Evening task on workdays. On a weekend or holiday, one or two are both normal; do not add a second just to fill capacity. Prefer one on a low-energy day, including a day off. A workday needs a real deadline or unavoidable required recurrence to justify two. Three on a weekend or holiday are only for dire deadline urgency. The explicit Day Off setting still prevents automatic additions.',
                 'Normally avoid two High-energy Evening tasks on the same day; add a second only when genuine deadline pressure requires it.',
                 'Goon mode is a hard pause: plan no tasks on those dates, regardless of deadlines or ordinary Day Off capacity.',
+                'Weekly and monthly focuses are optional user-authored preferences. Consider them when choosing tasks, but do not treat them as hard requirements.',
             ],
+            'focuses' => $focuses->map(fn (PlanningFocus $focus): array => [
+                'kind' => $focus->kind,
+                'starts_on' => $focus->starts_on,
+                'ends_on' => $focus->periodEnd()->toDateString(),
+                'focus' => $focus->focus,
+            ])->values()->all(),
             'setup' => $this->setup($targetInput),
             'pending_review_count' => ScheduledTask::query()
                 ->where('status', 'planned')->where('plan_date', '<', $targetKey)

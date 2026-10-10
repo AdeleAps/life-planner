@@ -124,7 +124,7 @@ class PlanningBriefTest extends TestCase
         $this->assertNotNull($entry['last_session_completed_at']);
         $this->assertContains('recent_multi_session_progress', $entry['target_assessment']['soft_factors']);
         $this->assertContains('would_be_third_consecutive_scheduled_day', $entry['target_assessment']['soft_factors']);
-        $this->assertCount(5, $brief['planning_guidance']);
+        $this->assertCount(6, $brief['planning_guidance']);
     }
 
     public function test_weekend_emergency_capacity_and_stacked_high_energy_are_visible_without_overriding_day_off(): void

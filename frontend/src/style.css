@@ -531,6 +531,42 @@ textarea:focus-visible {
   color: var(--ink);
 }
 
+.tomorrow-focus-prompts {
+  display: grid;
+  gap: 15px;
+  padding: 15px;
+  border: 1px solid #d8e9de;
+  border-radius: 16px;
+  background: #f5fbf6;
+}
+
+.tomorrow-focus-field {
+  display: grid;
+  gap: 8px;
+}
+
+.tomorrow-focus-field > span {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.tomorrow-focus-field small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tomorrow-focus-field textarea {
+  width: 100%;
+  min-height: 72px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  resize: vertical;
+}
+
 .tomorrow-energy {
   min-width: 0;
   margin: 0;

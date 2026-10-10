@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import PlannerDatePicker from './PlannerDatePicker.vue'
 import PlannerCalendar from './PlannerCalendar.vue'
+import PlanningFocusPanel from './PlanningFocusPanel.vue'
 import PlannerSelect from './PlannerSelect.vue'
 import { existingReminderSubscription, getReminderConfiguration, registerPlannerWorker, saveSubscription, subscribeToReminders, supportsReminders, unsubscribeFromReminders } from './push.js'
 
@@ -65,6 +66,10 @@ const tomorrowSetupLoading = ref(false)
 const tomorrowSetupSaving = ref(false)
 const tomorrowSetupLoadError = ref('')
 const tomorrowSetupError = ref('')
+const focusPrompts = ref([])
+const focusDraft = reactive({ week: '', month: '' })
+const focusPromptError = ref('')
+const focusRefreshKey = ref(0)
 const pendingReviewTasks = ref([])
 const pendingReviewLoading = ref(false)
 const pendingReviewError = ref('')
@@ -567,6 +572,25 @@ function openTomorrowSetup() {
   loadTasks()
   loadTomorrowSetup()
   loadPendingReviewTasks()
+  claimFocusPrompts()
+}
+
+async function claimFocusPrompts() {
+  focusPromptError.value = ''
+
+  try {
+    const response = await fetch('/api/v1/focuses/tomorrow-prompts', {
+      method: 'POST', headers: { Accept: 'application/json' },
+    })
+    if (!response.ok) throw new Error('Could not load focus questions.')
+    const result = await response.json()
+    if (!tomorrowSetupDialog.value?.open) return
+    focusPrompts.value = result.prompts || []
+    focusDraft.week = ''
+    focusDraft.month = ''
+  } catch {
+    focusPromptError.value = 'Could not load focus questions.'
+  }
 }
 
 function closeTomorrowSetup() {
@@ -581,6 +605,8 @@ function onTomorrowSetupClose() {
   tomorrowTaskError.value = ''
   tomorrowDishError.value = ''
   tomorrowSetupError.value = ''
+  if (!captureForTomorrow.value) focusPrompts.value = []
+  focusPromptError.value = ''
 }
 
 function toggleTomorrowDayOff() {
@@ -656,6 +682,20 @@ async function saveTomorrowSetup() {
   tomorrowSetupSaving.value = true
 
   try {
+    for (const prompt of focusPrompts.value) {
+      const response = await fetch(`/api/v1/focuses/${prompt.kind}/${prompt.starts_on}`, {
+        method: 'PUT',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ focus: focusDraft[prompt.kind].trim() || null }),
+      })
+      if (!response.ok) {
+        focusPromptError.value = 'Could not save your focus. Try again.'
+        return
+      }
+    }
+    if (focusPrompts.value.length) focusRefreshKey.value++
+    focusPrompts.value = []
+
     const response = await fetch(`/api/v1/planning-days/${tomorrowDate.value}/setup`, {
       method: 'PUT',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -1871,6 +1911,8 @@ onBeforeUnmount(() => {
       </div>
 
       <template v-if="activeView === 'tomorrow'">
+        <PlanningFocusPanel :date="tomorrowDate" :refresh-key="focusRefreshKey" />
+
         <section class="hero hero-tomorrow" :class="{ 'has-setup': tomorrowReady }" aria-labelledby="tomorrow-title">
           <div class="hero-content">
             <p class="hero-kicker">Your day ahead</p>
@@ -1961,6 +2003,13 @@ onBeforeUnmount(() => {
                       </li>
                     </ul>
                   </template>
+                </section>
+                <section v-if="focusPrompts.length || focusPromptError" class="tomorrow-focus-prompts" aria-label="Upcoming focus">
+                  <label v-for="prompt in focusPrompts" :key="prompt.kind" class="tomorrow-focus-field">
+                    <span>{{ prompt.kind === 'week' ? 'Next week’s focus' : 'Next month’s focus' }} <small>optional</small></span>
+                    <textarea v-model="focusDraft[prompt.kind]" rows="2" maxlength="500"></textarea>
+                  </label>
+                  <p v-if="focusPromptError" class="form-error" role="alert">{{ focusPromptError }}</p>
                 </section>
                 <fieldset class="tomorrow-energy">
                   <legend>Energy</legend>

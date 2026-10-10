@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\CalendarController;
 use App\Http\Controllers\Api\V1\DevResetController;
 use App\Http\Controllers\Api\V1\PlanningDayInputController;
+use App\Http\Controllers\Api\V1\PlanningFocusController;
 use App\Http\Controllers\Api\V1\ProjectController;
 use App\Http\Controllers\Api\V1\PushSubscriptionController;
 use App\Http\Controllers\Api\V1\ScheduledTaskController;
@@ -20,6 +21,10 @@ Route::get('/v1/calendar/bootstrap', [CalendarController::class, 'bootstrap'])->
 Route::post('/v1/calendar/days-off', [CalendarController::class, 'storeDayOff'])->name('api.v1.calendar.days-off.store');
 Route::put('/v1/calendar/days-off/{dayOffPeriod}', [CalendarController::class, 'updateDayOff'])->name('api.v1.calendar.days-off.update');
 Route::delete('/v1/calendar/days-off/{dayOffPeriod}', [CalendarController::class, 'destroyDayOff'])->name('api.v1.calendar.days-off.destroy');
+
+Route::get('/v1/focuses', [PlanningFocusController::class, 'index'])->name('api.v1.focuses.index');
+Route::post('/v1/focuses/tomorrow-prompts', [PlanningFocusController::class, 'claimTomorrowPrompts'])->name('api.v1.focuses.tomorrow-prompts');
+Route::put('/v1/focuses/{kind}/{startsOn}', [PlanningFocusController::class, 'update'])->name('api.v1.focuses.update');
 
 Route::get('/v1/push/configuration', [PushSubscriptionController::class, 'configuration'])->name('api.v1.push.configuration');
 Route::post('/v1/push/subscriptions', [PushSubscriptionController::class, 'store'])->middleware('throttle:10,1')->name('api.v1.push.subscriptions.store');
