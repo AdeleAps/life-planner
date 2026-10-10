@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\V1\CalendarController;
 use App\Http\Controllers\Api\V1\DevResetController;
 use App\Http\Controllers\Api\V1\PlanningDayInputController;
 use App\Http\Controllers\Api\V1\ProjectController;
@@ -13,6 +14,12 @@ use Illuminate\Support\Facades\Route;
 Route::get('/v1/health', static function (): JsonResponse {
     return response()->json(['status' => 'ok']);
 })->name('api.v1.health');
+
+Route::get('/v1/calendar', [CalendarController::class, 'index'])->name('api.v1.calendar.index');
+Route::get('/v1/calendar/bootstrap', [CalendarController::class, 'bootstrap'])->name('api.v1.calendar.bootstrap');
+Route::post('/v1/calendar/days-off', [CalendarController::class, 'storeDayOff'])->name('api.v1.calendar.days-off.store');
+Route::put('/v1/calendar/days-off/{dayOffPeriod}', [CalendarController::class, 'updateDayOff'])->name('api.v1.calendar.days-off.update');
+Route::delete('/v1/calendar/days-off/{dayOffPeriod}', [CalendarController::class, 'destroyDayOff'])->name('api.v1.calendar.days-off.destroy');
 
 Route::get('/v1/push/configuration', [PushSubscriptionController::class, 'configuration'])->name('api.v1.push.configuration');
 Route::post('/v1/push/subscriptions', [PushSubscriptionController::class, 'store'])->middleware('throttle:10,1')->name('api.v1.push.subscriptions.store');

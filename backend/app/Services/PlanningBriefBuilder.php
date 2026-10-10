@@ -12,6 +12,8 @@ use Illuminate\Support\Collection;
 
 class PlanningBriefBuilder
 {
+    public function __construct(private DayOffCalendar $dayOffCalendar) {}
+
     /**
      * A read-only snapshot for a planning run, never a published plan.
      *
@@ -22,6 +24,7 @@ class PlanningBriefBuilder
         $targetDate = $targetDate->startOfDay();
         $lastDate = $targetDate->addDays(13);
         $today = CarbonImmutable::now('Europe/Riga')->startOfDay();
+        $calendarDays = $this->dayOffCalendar->days($targetDate, $lastDate);
 
         $inputs = PlanningDayInput::query()
             ->whereBetween('plan_date', [$targetDate->toDateString(), $lastDate->toDateString()])
@@ -75,7 +78,7 @@ class PlanningBriefBuilder
             'horizon_end_date' => $lastDate->toDateString(),
             'snapshot_limits' => [
                 'calendar' => 'not_connected',
-                'national_and_user_holidays' => 'not_implemented',
+                'national_holidays' => $calendarDays->every(fn (array $day): bool => $day['holiday_year_synced']) ? 'synced' : 'not_fully_synced',
                 'advance_acceptances' => 'not_implemented',
                 'recurrence_due_dates' => 'not_evaluated',
                 'future_energy' => 'unknown_unless_saved',
@@ -86,8 +89,9 @@ class PlanningBriefBuilder
             'planning_guidance' => [
                 'Recently started multi-session tasks should be softly prioritized so started work moves toward completion.',
                 'Avoid scheduling the same task on more than two consecutive days unless genuinely necessary, such as deadline pressure.',
-                'Prefer one Evening task per day. Two are normally acceptable on a weekend or holiday, but a workday needs a real deadline or unavoidable required recurrence to justify two. Three on a weekend or holiday are only for dire deadline urgency. The explicit Day Off setting still prevents automatic additions.',
+                'Prefer one Evening task on workdays. On a weekend or holiday, one or two are both normal; do not add a second just to fill capacity. Prefer one on a low-energy day, including a day off. A workday needs a real deadline or unavoidable required recurrence to justify two. Three on a weekend or holiday are only for dire deadline urgency. The explicit Day Off setting still prevents automatic additions.',
                 'Normally avoid two High-energy Evening tasks on the same day; add a second only when genuine deadline pressure requires it.',
+                'Goon mode is a hard pause: plan no tasks on those dates, regardless of deadlines or ordinary Day Off capacity.',
             ],
             'setup' => $this->setup($targetInput),
             'pending_review_count' => ScheduledTask::query()
@@ -110,38 +114,45 @@ class PlanningBriefBuilder
             'standing_tasks' => $tasks->map(fn (Task $task): array => $this->taskEntry(
                 $task, $targetDate, $today, $targetInput, $assignmentsByTask->get($task->id, collect()),
                 $recentScheduledDays->get($task->id, collect()), $recentSessionCompletions->get($task->id, collect()),
-                $targetHighEnergyEveningCount,
+                $targetHighEnergyEveningCount, $calendarDays->get($targetKey),
             ))->all(),
-            'capacity_days' => collect(range(0, 13))->map(function (int $offset) use ($targetDate, $inputs, $assignmentsByDate, $tasks, $projects): array {
+            'capacity_days' => collect(range(0, 13))->map(function (int $offset) use ($targetDate, $inputs, $assignmentsByDate, $tasks, $projects, $calendarDays): array {
                 $date = $targetDate->addDays($offset);
                 $key = $date->toDateString();
                 $input = $inputs->get($key);
+                $calendarDay = $calendarDays->get($key);
                 $dayAssignments = $assignmentsByDate->get($key, collect());
                 $eveningCount = $dayAssignments->filter(fn (ScheduledTask $assignment): bool => $assignment->task?->type === 'evening')->count();
                 $highEnergyEveningCount = $dayAssignments->filter(fn (ScheduledTask $assignment): bool => $assignment->task?->type === 'evening'
                     && $assignment->task->energy_cost === 'high')->count();
-                $ordinaryEveningLimit = $date->isWeekend() ? 2 : 1;
-                $emergencyEveningLimit = $date->isWeekend() ? 3 : 2;
+                $ordinaryEveningLimit = $calendarDay['goon_mode'] ? 0 : ($calendarDay['is_day_off'] ? 2 : 1);
+                $emergencyEveningLimit = $calendarDay['goon_mode'] ? 0 : ($calendarDay['is_day_off'] ? 3 : 2);
+                $comfortableEveningCounts = $calendarDay['goon_mode'] ? [0]
+                    : ($calendarDay['is_day_off'] && $input?->energy_level !== 'low' ? [1, 2] : [1]);
 
                 return [
                     'date' => $key,
                     'calendar_weekday' => $date->format('l'),
                     'weekend_by_calendar' => $date->isWeekend(),
-                    'workday_classification' => 'unverified_without_holidays',
+                    'workday_classification' => $calendarDay['day_type'],
+                    'goon_mode' => $calendarDay['goon_mode'],
+                    'holiday_names' => $calendarDay['holiday_names'],
+                    'personal_days_off' => $calendarDay['personal_days_off'],
                     'setup' => $this->setup($input),
                     'known_day_task_count' => $dayAssignments->filter(fn (ScheduledTask $assignment): bool => $assignment->task?->type === 'day')->count(),
                     'known_evening_task_count' => $eveningCount,
                     'known_high_energy_evening_task_count' => $highEnergyEveningCount,
-                    'preferred_evening_task_count' => 1,
+                    'comfortable_evening_task_counts' => $comfortableEveningCounts,
                     'ordinary_evening_task_limit' => $ordinaryEveningLimit,
                     'absolute_evening_task_limit' => $emergencyEveningLimit,
-                    'limit_day_type_basis' => 'calendar_weekend_only_until_holidays_are_available',
-                    'known_room_to_preferred_count' => max(0, 1 - $eveningCount),
+                    'limit_day_type_basis' => $calendarDay['day_type'] === 'unverified' ? 'provisional_weekday' : 'confirmed_calendar',
+                    'known_room_to_comfortable_limit' => max(0, max($comfortableEveningCounts) - $eveningCount),
                     'known_room_to_ordinary_limit' => max(0, $ordinaryEveningLimit - $eveningCount),
                     'known_room_to_absolute_limit' => max(0, $emergencyEveningLimit - $eveningCount),
-                    'preferred_high_energy_evening_task_limit' => 1,
-                    'known_room_to_preferred_high_energy_limit' => max(0, 1 - $highEnergyEveningCount),
-                    'automatic_additions' => $input?->day_off ? 'none_day_off' : ($input?->dinner_enabled ? 'no_independent_evening_task' : 'subject_to_checks'),
+                    'preferred_high_energy_evening_task_limit' => $calendarDay['goon_mode'] ? 0 : 1,
+                    'known_room_to_preferred_high_energy_limit' => max(0, ($calendarDay['goon_mode'] ? 0 : 1) - $highEnergyEveningCount),
+                    'automatic_additions' => $calendarDay['goon_mode'] ? 'none_goon_mode'
+                        : ($input?->day_off ? 'none_day_off' : ($input?->dinner_enabled ? 'no_independent_evening_task' : 'subject_to_checks')),
                     'known_assignments' => $dayAssignments->map(fn (ScheduledTask $assignment): array => [
                         'task_id' => $assignment->task_id,
                         'title' => $assignment->task?->title,
@@ -189,6 +200,7 @@ class PlanningBriefBuilder
         Collection $recentScheduledDays,
         Collection $recentSessionCompletions,
         int $targetHighEnergyEveningCount,
+        array $calendarDay,
     ): array {
         $targetKey = $targetDate->toDateString();
         $assignedOnTarget = $assignments->contains(fn (ScheduledTask $assignment): bool => $assignment->plan_date === $targetKey);
@@ -199,6 +211,10 @@ class PlanningBriefBuilder
 
         if ($blockingDependencies->isNotEmpty()) {
             $blocks[] = 'dependencies_incomplete';
+        }
+
+        if ($calendarDay['goon_mode']) {
+            $blocks[] = 'goon_mode';
         }
 
         if ($input?->day_off && ! $assignedOnTarget) {
@@ -226,10 +242,16 @@ class PlanningBriefBuilder
         }
 
         if ($task->day_preference !== null) {
-            $checks[] = 'workday_or_holiday_classification_unverified';
+            if ($calendarDay['day_type'] === 'unverified') {
+                $checks[] = 'workday_or_holiday_classification_unverified';
+            } else {
+                $preferenceMismatch = $task->day_preference === 'workday' ? $calendarDay['is_day_off'] : ! $calendarDay['is_day_off'];
 
-            if (! $task->day_preference_is_hard && ($task->day_preference === 'workday') === $targetDate->isWeekend()) {
-                $softFactors[] = 'outside_preferred_calendar_day_type';
+                if ($preferenceMismatch && $task->day_preference_is_hard) {
+                    $blocks[] = 'day_preference_hard_mismatch';
+                } elseif ($preferenceMismatch) {
+                    $softFactors[] = 'outside_preferred_day_type';
+                }
             }
         }
 

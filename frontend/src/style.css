@@ -3622,6 +3622,12 @@ textarea:focus-visible {
   transform: translateY(-2px);
 }
 
+@media (max-width: 400px) {
+  .main-nav { gap: 2px; padding: 6px; }
+  .main-nav button { padding: 6px 2px; font-size: 10px; }
+  .main-nav button svg { width: 21px; height: 21px; }
+}
+
 .completion-celebration {
   position: fixed;
   z-index: 20;

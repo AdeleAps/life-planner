@@ -71,7 +71,8 @@ class PlanningBriefTest extends TestCase
             $this->assertContains('advance_notice_window_not_met', $tasks[$notice->id]['target_assessment']['blocking_reasons']);
             $this->assertSame(1, $brief['capacity_days'][0]['known_evening_task_count']);
             $this->assertSame(2, $brief['capacity_days'][0]['known_room_to_absolute_limit']);
-            $this->assertSame('unverified_without_holidays', $brief['capacity_days'][0]['workday_classification']);
+            $this->assertSame('day_off', $brief['capacity_days'][0]['workday_classification']);
+            $this->assertSame([1], $brief['capacity_days'][0]['comfortable_evening_task_counts']);
             $this->assertSame('Prepare the garden', $brief['capacity_days'][4]['deadlines_on_date'][0]['title']);
             $this->assertSame(1, $brief['projects'][0]['remaining_step_count']);
 
@@ -123,7 +124,7 @@ class PlanningBriefTest extends TestCase
         $this->assertNotNull($entry['last_session_completed_at']);
         $this->assertContains('recent_multi_session_progress', $entry['target_assessment']['soft_factors']);
         $this->assertContains('would_be_third_consecutive_scheduled_day', $entry['target_assessment']['soft_factors']);
-        $this->assertCount(4, $brief['planning_guidance']);
+        $this->assertCount(5, $brief['planning_guidance']);
     }
 
     public function test_weekend_emergency_capacity_and_stacked_high_energy_are_visible_without_overriding_day_off(): void
@@ -139,11 +140,12 @@ class PlanningBriefTest extends TestCase
 
         $this->assertSame(1, $sunday['known_high_energy_evening_task_count']);
         $this->assertSame(2, $sunday['ordinary_evening_task_limit']);
+        $this->assertSame([1, 2], $sunday['comfortable_evening_task_counts']);
         $this->assertSame(3, $sunday['absolute_evening_task_limit']);
         $this->assertSame(0, $sunday['known_room_to_preferred_high_energy_limit']);
         $this->assertSame(1, $monday['ordinary_evening_task_limit']);
         $this->assertSame(2, $monday['absolute_evening_task_limit']);
-        $this->assertSame('calendar_weekend_only_until_holidays_are_available', $sunday['limit_day_type_basis']);
+        $this->assertSame('confirmed_calendar', $sunday['limit_day_type_basis']);
         $this->assertContains('would_stack_high_energy_evening_tasks', $tasks[$candidate->id]['target_assessment']['soft_factors']);
         $this->assertSame('preliminary_candidate', $tasks[$candidate->id]['target_assessment']['state']);
     }

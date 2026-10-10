@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\DayOffPeriod;
 use App\Models\PlanningCycle;
 use App\Models\PlanningDayInput;
 use App\Services\WebPushSender;
@@ -93,6 +94,35 @@ class EveningReviewScheduleTest extends TestCase
         $this->artisan('planner:queue-evening-review')->assertExitCode(0);
         $this->assertEquals($firstRequest, PlanningCycle::query()->sole()->review_requested_at);
         $this->assertNotNull(PlanningCycle::query()->sole()->review_notification_sent_at);
+    }
+
+    public function test_goon_mode_skips_paused_days_but_reminds_on_the_final_evening(): void
+    {
+        CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-10 20:00:00', 'Europe/Riga'));
+
+        try {
+            DayOffPeriod::factory()->create([
+                'start_on' => '2026-10-11',
+                'end_on' => '2026-10-12',
+                'goon_mode' => true,
+            ]);
+            $this->mock(WebPushSender::class)
+                ->shouldReceive('sendReviewReminder')
+                ->once()
+                ->with('2026-10-13')
+                ->andReturn($this->sentReminder());
+
+            $this->artisan('planner:queue-evening-review')->assertExitCode(0);
+            CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-11 20:00:00', 'Europe/Riga'));
+            $this->artisan('planner:queue-evening-review')->assertExitCode(0);
+            $this->assertDatabaseCount('planning_cycles', 0);
+
+            CarbonImmutable::setTestNow(CarbonImmutable::parse('2026-10-12 20:00:00', 'Europe/Riga'));
+            $this->artisan('planner:queue-evening-review')->assertExitCode(0);
+            $this->assertDatabaseHas('planning_cycles', ['plan_date' => '2026-10-13']);
+        } finally {
+            CarbonImmutable::setTestNow();
+        }
     }
 
     /**

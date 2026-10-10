@@ -5,6 +5,7 @@ const props = defineProps({
   modelValue: { type: String, default: '' },
   invalid: { type: Boolean, default: false },
   describedBy: { type: String, default: undefined },
+  label: { type: String, default: 'Due on' },
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -140,7 +141,7 @@ defineExpose({ focus, scrollIntoView: (options) => trigger.value?.scrollIntoView
 <template>
   <div class="planner-date-picker">
     <button ref="trigger" class="planner-date-trigger" :class="{ 'is-invalid': invalid }" type="button"
-      :aria-label="`Due on: ${selectedDateLabel}`" aria-haspopup="dialog" :aria-expanded="isOpen"
+      :aria-label="`${label}: ${selectedDateLabel}`" aria-haspopup="dialog" :aria-expanded="isOpen"
       :aria-invalid="invalid" :aria-describedby="describedBy" @click="openPicker">
       <span>{{ selectedDateLabel }}</span>
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -149,7 +150,7 @@ defineExpose({ focus, scrollIntoView: (options) => trigger.value?.scrollIntoView
       </svg>
     </button>
 
-    <dialog ref="calendarDialog" class="calendar-sheet" aria-label="Choose due date" @close="onPickerClose" @click.self="closePicker">
+    <dialog ref="calendarDialog" class="calendar-sheet" :aria-label="`Choose ${label.toLowerCase()}`" @close="onPickerClose" @click.self="closePicker">
       <div class="calendar-sheet-top">
         <h2>Choose date</h2>
         <button type="button" aria-label="Close calendar" @click="closePicker">×</button>

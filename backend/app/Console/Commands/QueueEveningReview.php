@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\PlanningCycle;
+use App\Services\DayOffCalendar;
 use App\Services\WebPushSender;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Attributes\Description;
@@ -15,9 +16,15 @@ use RuntimeException;
 #[Description('Request the evening review and send a reminder unless tomorrow was already planned')]
 class QueueEveningReview extends Command
 {
-    public function handle(WebPushSender $sender): int
+    public function handle(WebPushSender $sender, DayOffCalendar $calendar): int
     {
         $planDate = CarbonImmutable::now('Europe/Riga')->addDay()->toDateString();
+
+        if ($calendar->isGoonModeOn($planDate)) {
+            $this->components->info("Goon mode pauses planning for {$planDate}.");
+
+            return self::SUCCESS;
+        }
 
         $cycle = DB::transaction(function () use ($planDate): ?PlanningCycle {
             $cycle = PlanningCycle::query()

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import PlannerDatePicker from './PlannerDatePicker.vue'
+import PlannerCalendar from './PlannerCalendar.vue'
 import PlannerSelect from './PlannerSelect.vue'
 import { existingReminderSubscription, getReminderConfiguration, registerPlannerWorker, saveSubscription, subscribeToReminders, supportsReminders, unsubscribeFromReminders } from './push.js'
 
@@ -1827,6 +1828,7 @@ async function saveTask() {
 let todayRefreshInterval
 onMounted(() => {
   checkServer()
+  fetch('/api/v1/calendar/bootstrap', { headers: { Accept: 'application/json' }, cache: 'no-store' }).catch(() => {})
   refreshToday()
   loadReminderStatus()
 
@@ -2696,6 +2698,10 @@ onBeforeUnmount(() => {
 
       </template>
 
+      <template v-else-if="activeView === 'calendar'">
+        <PlannerCalendar />
+      </template>
+
       <template v-else>
         <header class="projects-heading">
           <button v-if="selectedProject" class="project-back" type="button" @click="selectedProjectId = null">← Projects</button>
@@ -2905,6 +2911,13 @@ onBeforeUnmount(() => {
           <path d="M3 10h18" stroke="currentColor" stroke-width="1.8" />
         </svg>
         <span>Projects</span>
+      </button>
+      <button type="button" :aria-pressed="activeView === 'calendar'" @click="activeView = 'calendar'">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8" />
+          <path d="M7 3v4m10-4v4M3 10h18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+        <span>Calendar</span>
       </button>
     </nav>
   </div>
