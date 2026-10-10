@@ -19,8 +19,12 @@ return new class extends Migration
             $table->string('source')->default('form');
             $table->string('kind')->default('one_off');
             $table->string('type')->default('evening');
-            $table->string('priority')->default('standard');
+            $table->string('priority')->nullable();
             $table->string('energy_cost')->nullable();
+            $table->string('recurrence_type')->default('one_time');
+            $table->json('recurrence_rule')->nullable();
+            $table->date('deadline_on')->nullable();
+            $table->boolean('deadline_is_hard')->nullable();
             $table->string('lifecycle_state')->default('active');
             $table->unsignedInteger('revision')->default(1);
             $table->timestamps();

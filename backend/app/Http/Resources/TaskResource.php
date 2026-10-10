@@ -22,6 +22,11 @@ class TaskResource extends JsonResource
             'type' => $this->type,
             'priority' => $this->priority,
             'energy_cost' => $this->energy_cost,
+            'recurrence_type' => $this->recurrence_type,
+            'recurrence_rule' => $this->recurrence_rule,
+            'is_multi_session' => $this->is_multi_session,
+            'deadline_on' => $this->deadline_on?->toDateString(),
+            'deadline_is_hard' => $this->deadline_is_hard,
             'lifecycle_state' => $this->lifecycle_state,
             'created_at' => $this->created_at?->toIso8601String(),
         ];

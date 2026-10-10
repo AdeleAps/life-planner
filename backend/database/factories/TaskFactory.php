@@ -27,6 +27,11 @@ class TaskFactory extends Factory
             'type' => 'evening',
             'priority' => 'standard',
             'energy_cost' => 'standard',
+            'recurrence_type' => 'one_time',
+            'recurrence_rule' => null,
+            'is_multi_session' => false,
+            'deadline_on' => null,
+            'deadline_is_hard' => null,
             'lifecycle_state' => 'active',
             'revision' => 1,
         ];

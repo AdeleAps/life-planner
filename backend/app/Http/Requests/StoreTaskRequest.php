@@ -23,14 +23,95 @@ class StoreTaskRequest extends FormRequest
      */
     public function rules(): array
     {
+        $taskType = $this->input('type', 'evening');
+        $recurrenceType = $this->input('recurrence_type', 'one_time');
+        $isSchedule = $recurrenceType === 'schedule';
+        $isCount = $recurrenceType === 'count';
+        $scheduleUnit = $this->input('recurrence_rule.unit');
+        $isOneTimeEvening = $taskType === 'evening' && $recurrenceType === 'one_time';
+
         return [
             'client_request_id' => ['required', 'uuid'],
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string', 'max:5000'],
             'type' => ['sometimes', Rule::in(['day', 'evening'])],
+            'priority' => [
+                Rule::prohibitedIf($taskType === 'day'),
+                Rule::in(['low', 'standard', 'high']),
+            ],
             'energy_cost' => [
-                Rule::prohibitedIf($this->input('type') === 'day'),
+                Rule::prohibitedIf($taskType === 'day'),
                 Rule::in(['standard', 'high']),
+            ],
+            'recurrence_type' => [
+                Rule::in(['one_time', 'schedule', 'count']),
+            ],
+            'recurrence_rule' => [
+                Rule::requiredIf($isSchedule || $isCount),
+                Rule::prohibitedIf($recurrenceType === 'one_time'),
+                'array:unit,interval,weekdays,day_of_month,period_unit,period_interval,min_occurrences,max_occurrences',
+            ],
+            'recurrence_rule.unit' => [
+                Rule::requiredIf($isSchedule),
+                Rule::prohibitedIf(! $isSchedule),
+                Rule::in(['day', 'week', 'month']),
+            ],
+            'recurrence_rule.interval' => [
+                Rule::requiredIf($isSchedule),
+                Rule::prohibitedIf(! $isSchedule),
+                'integer',
+                'between:1,365',
+            ],
+            'recurrence_rule.weekdays' => [
+                Rule::requiredIf($isSchedule && $scheduleUnit === 'week'),
+                Rule::prohibitedIf(! $isSchedule || $scheduleUnit !== 'week'),
+                'array',
+                'min:1',
+                'max:7',
+            ],
+            'recurrence_rule.weekdays.*' => ['integer', Rule::in([0, 1, 2, 3, 4, 5, 6]), 'distinct'],
+            'recurrence_rule.day_of_month' => [
+                Rule::requiredIf($isSchedule && $scheduleUnit === 'month'),
+                Rule::prohibitedIf(! $isSchedule || $scheduleUnit !== 'month'),
+                'integer',
+                'between:1,31',
+            ],
+            'recurrence_rule.period_unit' => [
+                Rule::requiredIf($isCount),
+                Rule::prohibitedIf(! $isCount),
+                Rule::in(['week', 'month']),
+            ],
+            'recurrence_rule.period_interval' => [
+                Rule::requiredIf($isCount),
+                Rule::prohibitedIf(! $isCount),
+                'integer',
+                'between:1,120',
+            ],
+            'recurrence_rule.min_occurrences' => [
+                Rule::requiredIf($isCount),
+                Rule::prohibitedIf(! $isCount),
+                'integer',
+                'between:1,99',
+            ],
+            'recurrence_rule.max_occurrences' => [
+                Rule::requiredIf($isCount),
+                Rule::prohibitedIf(! $isCount),
+                'integer',
+                'between:1,99',
+                'gte:recurrence_rule.min_occurrences',
+            ],
+            'is_multi_session' => [
+                Rule::prohibitedIf(! $isOneTimeEvening),
+                'boolean',
+            ],
+            'deadline_on' => [
+                Rule::prohibitedIf(! $isOneTimeEvening),
+                'nullable',
+                'date_format:Y-m-d',
+            ],
+            'deadline_is_hard' => [
+                Rule::prohibitedIf(! $isOneTimeEvening || ! $this->filled('deadline_on')),
+                'boolean',
             ],
         ];
     }

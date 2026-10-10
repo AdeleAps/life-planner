@@ -1,5 +1,6 @@
 <script setup>
-import { nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import PlannerSelect from './PlannerSelect.vue'
 
 const tomorrow = new Date()
 tomorrow.setDate(tomorrow.getDate() + 1)
@@ -18,22 +19,418 @@ const tasksLoading = ref(false)
 const tasksError = ref('')
 const saveError = ref('')
 const saveMessage = ref('')
+const fieldErrors = reactive({})
 const isSaving = ref(false)
 const clientRequestId = ref(crypto.randomUUID())
 const taskTitleInput = ref(null)
-const taskTypeDetail = ref(null)
+const optionsTrigger = ref(null)
+const optionsDialog = ref(null)
+const optionsOpen = ref(false)
 const energyDetail = ref(null)
+const priorityDetail = ref(null)
+const repeatDetail = ref(null)
+const multiSessionDetail = ref(null)
+const deadlineDetail = ref(null)
 const contextDetail = ref(null)
+const scheduleIntervalInput = ref(null)
+const weekdayField = ref(null)
+const monthDayInput = ref(null)
+const countMinimumInput = ref(null)
+const countMaximumInput = ref(null)
+const countPeriodInput = ref(null)
+const deadlineDateInput = ref(null)
+const deadlineAmountInput = ref(null)
+const repeatErrorFields = ['repeat', 'interval', 'weekdays', 'day_of_month', 'min_occurrences', 'max_occurrences', 'period_interval']
+const repeatHasError = computed(() => repeatErrorFields.some((field) => fieldErrors[field]))
+const deadlineErrorFields = ['deadline', 'deadline_date', 'deadline_amount']
+const deadlineHasError = computed(() => deadlineErrorFields.some((field) => fieldErrors[field]))
+const optionsHaveError = computed(() => Object.keys(fieldErrors).some((field) => field !== 'title'))
+const priorityOptions = [
+  { value: 'low', label: 'Low' },
+  { value: 'standard', label: 'Standard' },
+  { value: 'high', label: 'High' },
+]
+const weekdayChoices = [
+  { value: 1, short: 'Mon', name: 'Monday' },
+  { value: 2, short: 'Tue', name: 'Tuesday' },
+  { value: 3, short: 'Wed', name: 'Wednesday' },
+  { value: 4, short: 'Thu', name: 'Thursday' },
+  { value: 5, short: 'Fri', name: 'Friday' },
+  { value: 6, short: 'Sat', name: 'Saturday' },
+  { value: 0, short: 'Sun', name: 'Sunday' },
+]
+const scheduleUnitOptions = [
+  { value: 'day', label: 'Days' },
+  { value: 'week', label: 'Weeks' },
+  { value: 'month', label: 'Months' },
+]
+const countPeriodOptions = [
+  { value: 'week', label: 'Weeks' },
+  { value: 'month', label: 'Months' },
+]
+const deadlineUnitOptions = [
+  { value: 'day', label: 'Days' },
+  { value: 'week', label: 'Weeks' },
+  { value: 'month', label: 'Months' },
+  { value: 'year', label: 'Years' },
+]
+const monthDayOptions = Array.from({ length: 31 }, (_, index) => ({ value: index + 1, label: String(index + 1) }))
+
+function initialRepeatValues() {
+  return {
+    unit: 'week',
+    interval: 1,
+    weekdays: [new Date().getDay()],
+    day_of_month: new Date().getDate(),
+    count_mode: 'exact',
+    min_occurrences: 2,
+    max_occurrences: 3,
+    period_unit: 'week',
+    period_interval: 1,
+  }
+}
+
+const repeatForm = reactive(initialRepeatValues())
+
+function initialDeadlineValues() {
+  return {
+    mode: 'none',
+    date: '',
+    amount: 1,
+    unit: 'week',
+    end_unit: 'week',
+    is_hard: false,
+  }
+}
+
+const deadlineForm = reactive(initialDeadlineValues())
 const taskForm = reactive({
   title: '',
   description: '',
   type: 'evening',
   energy_cost: 'standard',
+  priority: 'standard',
+  recurrence_type: 'one_time',
+  is_multi_session: false,
 })
 
 watch(() => taskForm.type, (type) => {
   taskForm.energy_cost = type === 'evening' ? 'standard' : null
+  taskForm.priority = type === 'evening' ? 'standard' : null
+  if (type === 'day') {
+    taskForm.is_multi_session = false
+    resetDeadlineForm()
+  }
 })
+
+watch(() => taskForm.recurrence_type, (type) => {
+  if (type !== 'one_time') {
+    taskForm.is_multi_session = false
+    resetDeadlineForm()
+  }
+})
+
+function priorityLabel(priority) {
+  return priorityOptions.find((option) => option.value === priority)?.label || 'Standard'
+}
+
+function localDate(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function validDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = new Date(`${value}T12:00:00`)
+  return !Number.isNaN(date.getTime()) && localDate(date) === value
+}
+
+function deadlineOn() {
+  if (deadlineForm.mode === 'none') return null
+  if (deadlineForm.mode === 'date') return validDate(deadlineForm.date) ? deadlineForm.date : null
+
+  const date = new Date()
+  date.setHours(12, 0, 0, 0)
+
+  if (deadlineForm.mode === 'end_of_period') {
+    if (deadlineForm.end_unit === 'week') {
+      date.setDate(date.getDate() + (7 - date.getDay()) % 7)
+    } else {
+      date.setDate(new Date(date.getFullYear(), date.getMonth() + 1, 0, 12).getDate())
+    }
+  } else if (deadlineForm.mode === 'relative') {
+    if (!validWholeNumber(deadlineForm.amount, 1, 999)) return null
+    const amount = Number(deadlineForm.amount)
+
+    if (deadlineForm.unit === 'day' || deadlineForm.unit === 'week') {
+      date.setDate(date.getDate() + amount * (deadlineForm.unit === 'week' ? 7 : 1))
+    } else {
+      const months = amount * (deadlineForm.unit === 'year' ? 12 : 1)
+      const targetMonth = date.getMonth() + months
+      const lastDay = new Date(date.getFullYear(), targetMonth + 1, 0, 12).getDate()
+      const day = Math.min(date.getDate(), lastDay)
+      date.setDate(1)
+      date.setMonth(targetMonth)
+      date.setDate(day)
+    }
+  }
+
+  return localDate(date)
+}
+
+function formatDeadline(dateString) {
+  const [year, month, day] = dateString.split('-').map(Number)
+  const date = new Date(year, month - 1, day, 12)
+  const options = { month: 'short', day: 'numeric' }
+  if (year !== new Date().getFullYear()) options.year = 'numeric'
+  return new Intl.DateTimeFormat(undefined, options).format(date)
+}
+
+function deadlineLabel() {
+  if (deadlineForm.mode === 'none') return 'No deadline'
+  const date = deadlineOn()
+  if (!date) return 'Choose a date'
+  return `${deadlineForm.is_hard ? 'Hard' : 'Soft'} · ${formatDeadline(date)}`
+}
+
+function repeatLabel(type, rule) {
+  if (type === 'one_time' || !rule) return 'One-time'
+
+  if (type === 'schedule') {
+    const interval = Number(rule.interval)
+    if (rule.unit === 'day') return interval === 1 ? 'Every day' : `Every ${interval} days`
+    if (rule.unit === 'month') {
+      const period = interval === 1 ? 'Every month' : `Every ${interval} months`
+      return `${period} · day ${rule.day_of_month}`
+    }
+
+    const selectedDays = [...(rule.weekdays || [])]
+      .sort((a, b) => (a + 6) % 7 - (b + 6) % 7)
+    const days = selectedDays
+      .map((day) => {
+        const choice = weekdayChoices.find((item) => item.value === day)
+        return selectedDays.length === 1 ? choice?.name : choice?.short
+      })
+      .filter(Boolean)
+      .join(', ')
+    return interval === 1 ? `Every ${days}` : `Every ${interval} weeks · ${days}`
+  }
+
+  const minimum = Number(rule.min_occurrences)
+  const maximum = Number(rule.max_occurrences)
+  const count = minimum === maximum ? `${minimum}` : `${minimum}–${maximum}`
+  const period = rule.period_interval === 1
+    ? `each ${rule.period_unit}`
+    : `every ${rule.period_interval} ${rule.period_unit}s`
+  return `${count} ${minimum === maximum && minimum === 1 ? 'time' : 'times'} ${period}`
+}
+
+const optionsSummary = computed(() => {
+  const changes = []
+
+  if (taskForm.type === 'evening') {
+    if (taskForm.energy_cost === 'high') changes.push('High energy')
+    if (taskForm.priority !== 'standard') changes.push(`${priorityLabel(taskForm.priority)} priority`)
+  }
+  if (taskForm.recurrence_type !== 'one_time') changes.push(repeatLabel(taskForm.recurrence_type, currentRepeatRule()))
+  if (taskForm.type === 'evening' && taskForm.recurrence_type === 'one_time') {
+    if (taskForm.is_multi_session) changes.push('Multi-session')
+    if (deadlineForm.mode !== 'none') {
+      const date = deadlineOn()
+      changes.push(date ? `${deadlineForm.is_hard ? 'Hard' : 'Soft'} deadline ${formatDeadline(date)}` : 'Deadline')
+    }
+  }
+  if (taskForm.description.trim()) changes.push('Description')
+
+  if (changes.length === 0) return 'Defaults'
+  if (changes.length > 2) return `${changes.slice(0, 2).join(' · ')} +${changes.length - 2}`
+  return changes.join(' · ')
+})
+
+function currentRepeatRule() {
+  if (taskForm.recurrence_type === 'schedule') {
+    const rule = {
+      unit: repeatForm.unit,
+      interval: repeatForm.interval,
+    }
+    if (repeatForm.unit === 'week') rule.weekdays = [...repeatForm.weekdays].sort((a, b) => a - b)
+    if (repeatForm.unit === 'month') rule.day_of_month = repeatForm.day_of_month
+    return rule
+  }
+
+  if (taskForm.recurrence_type === 'count') {
+    return {
+      period_unit: repeatForm.period_unit,
+      period_interval: repeatForm.period_interval,
+      min_occurrences: repeatForm.min_occurrences,
+      max_occurrences: repeatForm.count_mode === 'exact'
+        ? repeatForm.min_occurrences
+        : repeatForm.max_occurrences,
+    }
+  }
+
+  return null
+}
+
+function validWholeNumber(value, minimum, maximum) {
+  const number = Number(value)
+  return Number.isInteger(number) && number >= minimum && number <= maximum
+}
+
+function validateTaskForm() {
+  const errors = {}
+  if (!taskForm.title.trim()) errors.title = 'Give this task a name.'
+
+  if (taskForm.recurrence_type === 'one_time') {
+    if (taskForm.type === 'evening' && deadlineForm.mode === 'date' && !validDate(deadlineForm.date)) {
+      errors.deadline_date = 'Choose a date.'
+    }
+    if (taskForm.type === 'evening' && deadlineForm.mode === 'relative' && !validWholeNumber(deadlineForm.amount, 1, 999)) {
+      errors.deadline_amount = 'Enter 1–999.'
+    }
+    return errors
+  }
+
+  if (taskForm.recurrence_type === 'schedule') {
+    if (!validWholeNumber(repeatForm.interval, 1, 365)) {
+      errors.interval = 'Enter 1–365.'
+    }
+    if (repeatForm.unit === 'week' && repeatForm.weekdays.length === 0) {
+      errors.weekdays = 'Select a day.'
+    }
+    if (repeatForm.unit === 'month' && !validWholeNumber(repeatForm.day_of_month, 1, 31)) {
+      errors.day_of_month = 'Select a day.'
+    }
+  }
+
+  if (taskForm.recurrence_type === 'count') {
+    if (!validWholeNumber(repeatForm.min_occurrences, 1, 99)) {
+      errors.min_occurrences = 'Enter 1–99.'
+    }
+    if (repeatForm.count_mode === 'range') {
+      if (!validWholeNumber(repeatForm.max_occurrences, 1, 99)) {
+        errors.max_occurrences = 'Enter 1–99.'
+      }
+      if (!errors.min_occurrences && !errors.max_occurrences
+        && Number(repeatForm.max_occurrences) < Number(repeatForm.min_occurrences)) {
+        errors.max_occurrences = 'Keep this at or above Minimum.'
+      }
+    }
+    if (!validWholeNumber(repeatForm.period_interval, 1, 120)) {
+      errors.period_interval = 'Enter 1–120.'
+    }
+  }
+
+  return errors
+}
+
+function replaceFieldErrors(errors) {
+  for (const field of Object.keys(fieldErrors)) delete fieldErrors[field]
+  Object.assign(fieldErrors, errors)
+}
+
+function clearFieldError(field) {
+  delete fieldErrors[field]
+  saveError.value = ''
+}
+
+function clearRepeatErrors() {
+  for (const field of repeatErrorFields) delete fieldErrors[field]
+}
+
+function clearDeadlineErrors() {
+  for (const field of deadlineErrorFields) delete fieldErrors[field]
+}
+
+function resetDeadlineForm() {
+  Object.assign(deadlineForm, initialDeadlineValues())
+  clearDeadlineErrors()
+}
+
+function onDeadlineModeChange() {
+  clearDeadlineErrors()
+  if (deadlineForm.mode !== 'none') return
+  deadlineForm.is_hard = false
+  deadlineDetail.value.open = false
+  deadlineDetail.value.querySelector('summary')?.focus({ preventScroll: true })
+}
+
+function onRepeatTypeChange() {
+  clearRepeatErrors()
+  finishRepeatChoice()
+}
+
+function onScheduleUnitChange() {
+  clearFieldError('weekdays')
+  clearFieldError('day_of_month')
+}
+
+function mapServerErrors(errors) {
+  const fieldMap = {
+    title: ['title', 'Give this task a name.'],
+    priority: ['priority', 'Choose a priority.'],
+    is_multi_session: ['sessions', 'Check sessions.'],
+    deadline_on: deadlineForm.mode === 'date'
+      ? ['deadline_date', 'Choose a date.']
+      : ['deadline', 'Check the deadline.'],
+    deadline_is_hard: ['deadline', 'Check the deadline.'],
+    'recurrence_rule.interval': ['interval', 'Enter 1–365.'],
+    'recurrence_rule.weekdays': ['weekdays', 'Select a day.'],
+    'recurrence_rule.day_of_month': ['day_of_month', 'Select a day.'],
+    'recurrence_rule.min_occurrences': ['min_occurrences', 'Enter 1–99.'],
+    'recurrence_rule.max_occurrences': ['max_occurrences', 'Check Maximum.'],
+    'recurrence_rule.period_interval': ['period_interval', 'Enter 1–120.'],
+  }
+  const mapped = {}
+
+  for (const key of Object.keys(errors)) {
+    const [field, message] = fieldMap[key]
+      || (key.startsWith('recurrence_rule.weekdays.') ? fieldMap['recurrence_rule.weekdays'] : null)
+      || (key.startsWith('recurrence_') ? ['repeat', 'Check the repeat settings.'] : [null, null])
+    if (field && !mapped[field]) mapped[field] = message
+  }
+
+  return mapped
+}
+
+async function focusFirstError() {
+  const firstField = Object.keys(fieldErrors)[0]
+  if (!firstField) return
+
+  if (firstField !== 'title') openOptions()
+  if (firstField === 'priority' && priorityDetail.value) priorityDetail.value.open = true
+  else if (firstField === 'sessions' && multiSessionDetail.value) multiSessionDetail.value.open = true
+  else if (deadlineHasError.value && deadlineDetail.value) deadlineDetail.value.open = true
+  else if (repeatHasError.value && repeatDetail.value) repeatDetail.value.open = true
+  await nextTick()
+
+  const targets = {
+    title: taskTitleInput.value,
+    priority: priorityDetail.value?.querySelector('summary'),
+    sessions: multiSessionDetail.value?.querySelector('summary'),
+    deadline: deadlineDetail.value?.querySelector('summary'),
+    deadline_date: deadlineDateInput.value,
+    deadline_amount: deadlineAmountInput.value,
+    repeat: repeatDetail.value?.querySelector('summary'),
+    interval: scheduleIntervalInput.value,
+    weekdays: weekdayField.value?.querySelector('input'),
+    day_of_month: monthDayInput.value,
+    min_occurrences: countMinimumInput.value,
+    max_occurrences: countMaximumInput.value,
+    period_interval: countPeriodInput.value,
+  }
+  const target = targets[firstField]
+  target?.focus({ preventScroll: true })
+  target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+function finishRepeatChoice() {
+  if (taskForm.recurrence_type !== 'one_time') return
+  repeatDetail.value.open = false
+  repeatDetail.value.querySelector('summary')?.focus({ preventScroll: true })
+}
 
 async function checkServer() {
   isCheckingServer.value = true
@@ -83,6 +480,20 @@ function showTasks() {
   loadTasks()
 }
 
+function openOptions() {
+  if (!optionsDialog.value?.open) optionsDialog.value?.showModal()
+  optionsOpen.value = true
+}
+
+function closeOptions() {
+  optionsDialog.value?.close()
+}
+
+function onOptionsClose() {
+  optionsOpen.value = false
+  optionsTrigger.value?.focus({ preventScroll: true })
+}
+
 async function openTaskForm() {
   showTasks()
   await nextTick()
@@ -92,21 +503,29 @@ async function openTaskForm() {
 function closeOtherDetails(event) {
   if (!event.target.open) return
 
-  for (const detail of [taskTypeDetail.value, energyDetail.value, contextDetail.value]) {
+  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, deadlineDetail.value, contextDetail.value]) {
     if (detail && detail !== event.target) detail.open = false
   }
 }
 
 function finishChoice(field) {
-  const detail = field === 'type' ? taskTypeDetail.value : energyDetail.value
+  const detail = {
+    energy: energyDetail.value,
+    priority: priorityDetail.value,
+  }[field]
   if (!detail) return
 
   detail.open = false
   detail.querySelector('summary')?.focus({ preventScroll: true })
 }
 
+function finishPriorityChoice() {
+  clearFieldError('priority')
+  finishChoice('priority')
+}
+
 function closeAllDetails() {
-  for (const detail of [taskTypeDetail.value, energyDetail.value, contextDetail.value]) {
+  for (const detail of [energyDetail.value, priorityDetail.value, repeatDetail.value, multiSessionDetail.value, deadlineDetail.value, contextDetail.value]) {
     if (detail) detail.open = false
   }
 }
@@ -114,9 +533,16 @@ function closeAllDetails() {
 async function saveTask() {
   if (isSaving.value) return
 
-  isSaving.value = true
   saveError.value = ''
   saveMessage.value = ''
+  replaceFieldErrors(validateTaskForm())
+
+  if (Object.keys(fieldErrors).length) {
+    await focusFirstError()
+    return
+  }
+
+  isSaving.value = true
 
   try {
     const taskInput = {
@@ -124,10 +550,22 @@ async function saveTask() {
       title: taskForm.title.trim(),
       description: taskForm.description.trim() || null,
       type: taskForm.type,
+      recurrence_type: taskForm.recurrence_type,
     }
 
     if (taskForm.type === 'evening') {
       taskInput.energy_cost = taskForm.energy_cost
+      taskInput.priority = taskForm.priority
+    }
+
+    if (taskForm.recurrence_type !== 'one_time') {
+      taskInput.recurrence_rule = currentRepeatRule()
+    } else if (taskForm.type === 'evening') {
+      taskInput.is_multi_session = taskForm.is_multi_session
+      if (deadlineForm.mode !== 'none') {
+        taskInput.deadline_on = deadlineOn()
+        taskInput.deadline_is_hard = deadlineForm.is_hard
+      }
     }
 
     const response = await fetch('/api/v1/tasks', {
@@ -141,8 +579,14 @@ async function saveTask() {
     const result = await response.json()
 
     if (!response.ok) {
-      const firstError = Object.values(result.errors || {})[0]?.[0]
-      throw new Error(firstError || 'Task could not be saved.')
+      if (response.status === 422 && result.errors) {
+        replaceFieldErrors(mapServerErrors(result.errors))
+        if (Object.keys(fieldErrors).length) {
+          await focusFirstError()
+          return
+        }
+      }
+      throw new Error("Couldn't save this task. Try again.")
     }
 
     tasks.value = [result.data, ...tasks.value.filter((task) => task.id !== result.data.id)]
@@ -150,11 +594,16 @@ async function saveTask() {
     taskForm.description = ''
     taskForm.type = 'evening'
     taskForm.energy_cost = 'standard'
+    taskForm.priority = 'standard'
+    taskForm.recurrence_type = 'one_time'
+    taskForm.is_multi_session = false
+    Object.assign(repeatForm, initialRepeatValues())
+    resetDeadlineForm()
     clientRequestId.value = crypto.randomUUID()
     saveMessage.value = 'Task saved.'
     closeAllDetails()
   } catch (error) {
-    saveError.value = error.message || 'Task could not be saved.'
+    saveError.value = error.message || "Couldn't save this task. Try again."
   } finally {
     isSaving.value = false
   }
@@ -166,10 +615,10 @@ onMounted(checkServer)
 <template>
   <div class="app-shell">
     <header class="app-header">
-      <div class="brand-lockup">
+      <button class="brand-lockup" type="button" aria-label="Planner home" @click="activeView = 'tomorrow'">
         <img class="brand-flower" src="/sunflower.svg?v=2" alt="" />
         <span class="wordmark">Planner</span>
-      </div>
+      </button>
     </header>
 
     <main class="main-content">
@@ -221,66 +670,39 @@ onMounted(checkServer)
         </header>
 
         <section class="task-panel" aria-label="Add a task">
-          <form class="task-form" @submit.prevent="saveTask">
-            <label class="field">
+          <form class="task-form" novalidate @submit.prevent="saveTask">
+            <label class="field" :class="{ 'has-error': fieldErrors.title }">
               <span>What needs doing?</span>
-              <input ref="taskTitleInput" v-model="taskForm.title" type="text" maxlength="255" required />
+              <input ref="taskTitleInput" v-model="taskForm.title" type="text" maxlength="255" required
+                :aria-invalid="Boolean(fieldErrors.title)" :aria-describedby="fieldErrors.title ? 'task-title-error' : undefined"
+                @input="clearFieldError('title')" />
+              <span v-if="fieldErrors.title" id="task-title-error" class="field-error">{{ fieldErrors.title }}</span>
             </label>
 
-            <div class="form-details">
-              <details ref="taskTypeDetail" class="form-detail" @toggle="closeOtherDetails">
-                <summary>
-                  <span>Task type</span>
-                  <span class="detail-value">{{ taskForm.type === 'day' ? 'Day' : 'Evening' }}</span>
-                </summary>
-                <div class="detail-content">
-                  <div class="choice-grid type-choices" role="radiogroup" aria-label="Task type">
-                    <label class="choice-option" :class="{ selected: taskForm.type === 'evening' }">
-                      <input v-model="taskForm.type" type="radio" name="task-type" value="evening" @change="finishChoice('type')" />
-                      <span>Evening</span>
-                      <small>Substantial</small>
-                    </label>
-                    <label class="choice-option" :class="{ selected: taskForm.type === 'day' }">
-                      <input v-model="taskForm.type" type="radio" name="task-type" value="day" @change="finishChoice('type')" />
-                      <span>Day</span>
-                      <small>Quick item</small>
-                    </label>
-                  </div>
-                </div>
-              </details>
+            <fieldset class="capture-type">
+              <legend>Task type</legend>
+              <div class="choice-grid type-choices" role="radiogroup" aria-label="Task type">
+                <label class="choice-option" :class="{ selected: taskForm.type === 'evening' }">
+                  <input v-model="taskForm.type" type="radio" name="task-type" value="evening" />
+                  <span>Evening</span>
+                  <small>Substantial</small>
+                </label>
+                <label class="choice-option" :class="{ selected: taskForm.type === 'day' }">
+                  <input v-model="taskForm.type" type="radio" name="task-type" value="day" />
+                  <span>Day</span>
+                  <small>Quick item</small>
+                </label>
+              </div>
+            </fieldset>
 
-              <details v-if="taskForm.type === 'evening'" ref="energyDetail" class="form-detail" @toggle="closeOtherDetails">
-                <summary>
-                  <span>Energy needed</span>
-                  <span class="detail-value">{{ taskForm.energy_cost === 'high' ? 'High' : 'Standard' }}</span>
-                </summary>
-                <div class="detail-content">
-                  <div class="choice-grid energy-choices" role="radiogroup" aria-label="Energy needed">
-                    <label class="choice-option energy-option" :class="{ selected: taskForm.energy_cost === 'standard' }">
-                      <input v-model="taskForm.energy_cost" type="radio" name="energy" value="standard" @change="finishChoice('energy')" />
-                      <span>Standard</span>
-                    </label>
-                    <label class="choice-option energy-option" :class="{ selected: taskForm.energy_cost === 'high' }">
-                      <input v-model="taskForm.energy_cost" type="radio" name="energy" value="high" @change="finishChoice('energy')" />
-                      <span>High</span>
-                    </label>
-                  </div>
-                </div>
-              </details>
-
-              <details ref="contextDetail" class="form-detail" @toggle="closeOtherDetails">
-                <summary>
-                  <span>Context</span>
-                  <span class="detail-value">{{ taskForm.description.trim() ? 'Added' : 'Optional' }}</span>
-                </summary>
-                <div class="detail-content">
-                  <label class="field">
-                    <span class="visually-hidden">Context</span>
-                    <textarea v-model="taskForm.description" rows="3" maxlength="5000"></textarea>
-                  </label>
-                </div>
-              </details>
-            </div>
+            <button ref="optionsTrigger" class="options-trigger" :class="{ 'has-error': optionsHaveError }" type="button"
+              aria-haspopup="dialog" aria-controls="task-options" :aria-expanded="optionsOpen" @click="openOptions">
+              <span>Options</span>
+              <span class="options-trigger-value">{{ optionsHaveError ? 'Check options' : optionsSummary }}</span>
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="m9 5 7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
 
             <p v-if="saveError" class="form-error" role="alert">{{ saveError }}</p>
             <p v-if="saveMessage" class="form-success" role="status">{{ saveMessage }}</p>
@@ -288,6 +710,250 @@ onMounted(checkServer)
               {{ isSaving ? 'Saving…' : 'Save task' }}
             </button>
           </form>
+
+          <dialog id="task-options" ref="optionsDialog" class="options-sheet" aria-labelledby="task-options-title"
+            @close="onOptionsClose" @click.self="closeOptions">
+            <header class="options-sheet-header">
+              <h2 id="task-options-title">Options</h2>
+            </header>
+            <div class="options-sheet-body">
+              <div class="form-details">
+                <details v-if="taskForm.type === 'evening'" ref="energyDetail" class="form-detail" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Energy needed</span>
+                    <span class="detail-value">{{ taskForm.energy_cost === 'high' ? 'High' : 'Standard' }}</span>
+                  </summary>
+                  <div class="detail-content">
+                    <div class="choice-grid energy-choices" role="radiogroup" aria-label="Energy needed">
+                      <label class="choice-option energy-option" :class="{ selected: taskForm.energy_cost === 'standard' }">
+                        <input v-model="taskForm.energy_cost" type="radio" name="energy" value="standard" @change="finishChoice('energy')" />
+                        <span>Standard</span>
+                      </label>
+                      <label class="choice-option energy-option" :class="{ selected: taskForm.energy_cost === 'high' }">
+                        <input v-model="taskForm.energy_cost" type="radio" name="energy" value="high" @change="finishChoice('energy')" />
+                        <span>High</span>
+                      </label>
+                    </div>
+                  </div>
+                </details>
+
+                <details v-if="taskForm.type === 'evening'" ref="priorityDetail" class="form-detail" :class="{ 'has-error': fieldErrors.priority }" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Priority</span>
+                    <span class="detail-value">{{ priorityLabel(taskForm.priority) }}</span>
+                  </summary>
+                  <div class="detail-content">
+                    <div class="choice-grid priority-choices" role="radiogroup" aria-label="Priority">
+                      <label v-for="option in priorityOptions" :key="option.value" class="choice-option priority-option" :class="{ selected: taskForm.priority === option.value }">
+                        <input v-model="taskForm.priority" type="radio" name="priority" :value="option.value" @change="finishPriorityChoice" />
+                        <span>{{ option.label }}</span>
+                      </label>
+                    </div>
+                    <p v-if="fieldErrors.priority" class="field-error choice-error">{{ fieldErrors.priority }}</p>
+                  </div>
+                </details>
+
+                <details ref="repeatDetail" class="form-detail" :class="{ 'has-error': repeatHasError }" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Repeat</span>
+                    <span class="detail-value">{{ repeatLabel(taskForm.recurrence_type, currentRepeatRule()) }}</span>
+                  </summary>
+                  <div class="detail-content repeat-content">
+                    <div class="repeat-modes" role="radiogroup" aria-label="Repeat">
+                      <label class="repeat-mode" :class="{ selected: taskForm.recurrence_type === 'one_time' }">
+                        <input v-model="taskForm.recurrence_type" type="radio" name="repeat-type" value="one_time" @change="onRepeatTypeChange" />
+                        <span>One-time</span>
+                      </label>
+                      <label class="repeat-mode" :class="{ selected: taskForm.recurrence_type === 'schedule' }">
+                        <input v-model="taskForm.recurrence_type" type="radio" name="repeat-type" value="schedule" @change="onRepeatTypeChange" />
+                        <span>Set days</span>
+                      </label>
+                      <label class="repeat-mode" :class="{ selected: taskForm.recurrence_type === 'count' }">
+                        <input v-model="taskForm.recurrence_type" type="radio" name="repeat-type" value="count" @change="onRepeatTypeChange" />
+                        <span>Count target</span>
+                      </label>
+                    </div>
+                    <p v-if="fieldErrors.repeat" class="field-error">{{ fieldErrors.repeat }}</p>
+
+                    <div v-if="taskForm.recurrence_type === 'schedule'" class="repeat-settings">
+                      <div class="repeat-fields">
+                        <label class="repeat-field repeat-number" :class="{ 'has-error': fieldErrors.interval }">
+                          <span>Every</span>
+                          <input ref="scheduleIntervalInput" v-model.number="repeatForm.interval" type="number" min="1" max="365" required
+                            :aria-invalid="Boolean(fieldErrors.interval)" :aria-describedby="fieldErrors.interval ? 'repeat-interval-error' : undefined"
+                            @input="clearFieldError('interval')" />
+                          <span v-if="fieldErrors.interval" id="repeat-interval-error" class="field-error">{{ fieldErrors.interval }}</span>
+                        </label>
+                        <div class="repeat-field repeat-unit">
+                          <span>Unit</span>
+                          <PlannerSelect v-model="repeatForm.unit" :options="scheduleUnitOptions" label="Repeat unit" @change="onScheduleUnitChange" />
+                        </div>
+                      </div>
+
+                      <fieldset v-if="repeatForm.unit === 'week'" ref="weekdayField" class="weekday-field" :class="{ 'has-error': fieldErrors.weekdays }" :aria-describedby="fieldErrors.weekdays ? 'repeat-weekdays-error' : undefined">
+                        <legend>On</legend>
+                        <div class="weekday-options">
+                          <label v-for="day in weekdayChoices" :key="day.value" class="weekday-option" :class="{ selected: repeatForm.weekdays.includes(day.value) }">
+                            <input v-model="repeatForm.weekdays" type="checkbox" :value="day.value" :aria-label="day.name" :aria-invalid="Boolean(fieldErrors.weekdays)" @change="clearFieldError('weekdays')" />
+                            <span>{{ day.short }}</span>
+                          </label>
+                        </div>
+                        <p v-if="fieldErrors.weekdays" id="repeat-weekdays-error" class="field-error">{{ fieldErrors.weekdays }}</p>
+                      </fieldset>
+
+                      <div v-if="repeatForm.unit === 'month'" class="repeat-field" :class="{ 'has-error': fieldErrors.day_of_month }">
+                        <span>Day of month (last day if shorter)</span>
+                        <PlannerSelect ref="monthDayInput" v-model="repeatForm.day_of_month" :options="monthDayOptions" label="Day of month" grid
+                          :invalid="Boolean(fieldErrors.day_of_month)" :described-by="fieldErrors.day_of_month ? 'repeat-month-day-error' : undefined"
+                          @change="clearFieldError('day_of_month')" />
+                        <span v-if="fieldErrors.day_of_month" id="repeat-month-day-error" class="field-error">{{ fieldErrors.day_of_month }}</span>
+                      </div>
+
+                    </div>
+
+                    <div v-if="taskForm.recurrence_type === 'count'" class="repeat-settings">
+                      <div class="count-modes" role="radiogroup" aria-label="Count type">
+                        <label :class="{ selected: repeatForm.count_mode === 'exact' }">
+                          <input v-model="repeatForm.count_mode" type="radio" name="count-mode" value="exact" @change="clearFieldError('max_occurrences')" />
+                          <span>Exact</span>
+                        </label>
+                        <label :class="{ selected: repeatForm.count_mode === 'range' }">
+                          <input v-model="repeatForm.count_mode" type="radio" name="count-mode" value="range" @change="clearFieldError('max_occurrences')" />
+                          <span>Range</span>
+                        </label>
+                      </div>
+                      <div class="repeat-fields">
+                        <label class="repeat-field repeat-number" :class="{ 'has-error': fieldErrors.min_occurrences }">
+                          <span>{{ repeatForm.count_mode === 'exact' ? 'Times' : 'Minimum' }}</span>
+                          <input ref="countMinimumInput" v-model.number="repeatForm.min_occurrences" type="number" min="1" max="99" required
+                            :aria-invalid="Boolean(fieldErrors.min_occurrences)" :aria-describedby="fieldErrors.min_occurrences ? 'repeat-minimum-error' : undefined"
+                            @input="clearFieldError('min_occurrences')" />
+                          <span v-if="fieldErrors.min_occurrences" id="repeat-minimum-error" class="field-error">{{ fieldErrors.min_occurrences }}</span>
+                        </label>
+                        <label v-if="repeatForm.count_mode === 'range'" class="repeat-field repeat-number" :class="{ 'has-error': fieldErrors.max_occurrences }">
+                          <span>Maximum</span>
+                          <input ref="countMaximumInput" v-model.number="repeatForm.max_occurrences" type="number" min="1" max="99" required
+                            :aria-invalid="Boolean(fieldErrors.max_occurrences)" :aria-describedby="fieldErrors.max_occurrences ? 'repeat-maximum-error' : undefined"
+                            @input="clearFieldError('max_occurrences')" />
+                          <span v-if="fieldErrors.max_occurrences" id="repeat-maximum-error" class="field-error">{{ fieldErrors.max_occurrences }}</span>
+                        </label>
+                      </div>
+                      <div class="repeat-fields">
+                        <label class="repeat-field repeat-number" :class="{ 'has-error': fieldErrors.period_interval }">
+                          <span>Every</span>
+                          <input ref="countPeriodInput" v-model.number="repeatForm.period_interval" type="number" min="1" max="120" required
+                            :aria-invalid="Boolean(fieldErrors.period_interval)" :aria-describedby="fieldErrors.period_interval ? 'repeat-period-error' : undefined"
+                            @input="clearFieldError('period_interval')" />
+                          <span v-if="fieldErrors.period_interval" id="repeat-period-error" class="field-error">{{ fieldErrors.period_interval }}</span>
+                        </label>
+                        <div class="repeat-field repeat-unit">
+                          <span>Period</span>
+                          <PlannerSelect v-model="repeatForm.period_unit" :options="countPeriodOptions" label="Count period" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </details>
+
+                <details v-if="taskForm.type === 'evening' && taskForm.recurrence_type === 'one_time'" ref="multiSessionDetail" class="form-detail" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Sessions</span>
+                    <span class="detail-value">{{ taskForm.is_multi_session ? 'Multiple' : 'One' }}</span>
+                  </summary>
+                  <div class="detail-content">
+                    <label class="session-option">
+                      <input v-model="taskForm.is_multi_session" type="checkbox" />
+                      <span>Keep this task active until marked Completed</span>
+                    </label>
+                  </div>
+                </details>
+
+                <details v-if="taskForm.type === 'evening' && taskForm.recurrence_type === 'one_time'" ref="deadlineDetail" class="form-detail" :class="{ 'has-error': deadlineHasError }" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Deadline</span>
+                    <span class="detail-value">{{ deadlineLabel() }}</span>
+                  </summary>
+                  <div class="detail-content deadline-content">
+                    <div class="deadline-modes" role="radiogroup" aria-label="Deadline timing">
+                      <label class="repeat-mode" :class="{ selected: deadlineForm.mode === 'none' }">
+                        <input v-model="deadlineForm.mode" type="radio" name="deadline-mode" value="none" @change="onDeadlineModeChange" />
+                        <span>No deadline</span>
+                      </label>
+                      <label class="repeat-mode" :class="{ selected: deadlineForm.mode === 'date' }">
+                        <input v-model="deadlineForm.mode" type="radio" name="deadline-mode" value="date" @change="onDeadlineModeChange" />
+                        <span>Date</span>
+                      </label>
+                      <label class="repeat-mode" :class="{ selected: deadlineForm.mode === 'end_of_period' }">
+                        <input v-model="deadlineForm.mode" type="radio" name="deadline-mode" value="end_of_period" @change="onDeadlineModeChange" />
+                        <span>End of</span>
+                      </label>
+                      <label class="repeat-mode" :class="{ selected: deadlineForm.mode === 'relative' }">
+                        <input v-model="deadlineForm.mode" type="radio" name="deadline-mode" value="relative" @change="onDeadlineModeChange" />
+                        <span>From today</span>
+                      </label>
+                    </div>
+
+                    <div v-if="deadlineForm.mode !== 'none'" class="deadline-settings">
+                      <label v-if="deadlineForm.mode === 'date'" class="repeat-field" :class="{ 'has-error': fieldErrors.deadline_date }">
+                        <span>Due on</span>
+                        <input ref="deadlineDateInput" v-model="deadlineForm.date" type="date"
+                          :aria-invalid="Boolean(fieldErrors.deadline_date)" :aria-describedby="fieldErrors.deadline_date ? 'deadline-date-error' : undefined"
+                          @input="clearFieldError('deadline_date')" />
+                        <span v-if="fieldErrors.deadline_date" id="deadline-date-error" class="field-error">{{ fieldErrors.deadline_date }}</span>
+                      </label>
+
+                      <div v-if="deadlineForm.mode === 'end_of_period'" class="deadline-period-modes" role="radiogroup" aria-label="End of">
+                        <label :class="{ selected: deadlineForm.end_unit === 'week' }">
+                          <input v-model="deadlineForm.end_unit" type="radio" name="deadline-end-unit" value="week" />
+                          <span>Week</span>
+                        </label>
+                        <label :class="{ selected: deadlineForm.end_unit === 'month' }">
+                          <input v-model="deadlineForm.end_unit" type="radio" name="deadline-end-unit" value="month" />
+                          <span>Month</span>
+                        </label>
+                      </div>
+
+                      <div v-if="deadlineForm.mode === 'relative'" class="repeat-fields">
+                        <label class="repeat-field repeat-number" :class="{ 'has-error': fieldErrors.deadline_amount }">
+                          <span>In</span>
+                          <input ref="deadlineAmountInput" v-model.number="deadlineForm.amount" type="number" min="1" max="999"
+                            :aria-invalid="Boolean(fieldErrors.deadline_amount)" :aria-describedby="fieldErrors.deadline_amount ? 'deadline-amount-error' : undefined"
+                            @input="clearFieldError('deadline_amount')" />
+                          <span v-if="fieldErrors.deadline_amount" id="deadline-amount-error" class="field-error">{{ fieldErrors.deadline_amount }}</span>
+                        </label>
+                        <div class="repeat-field repeat-unit">
+                          <span>Unit</span>
+                          <PlannerSelect v-model="deadlineForm.unit" :options="deadlineUnitOptions" label="Deadline unit" />
+                        </div>
+                      </div>
+
+                      <label class="deadline-hard">
+                        <input v-model="deadlineForm.is_hard" type="checkbox" />
+                        <span>Hard deadline</span>
+                      </label>
+                    </div>
+                    <p v-if="fieldErrors.deadline" class="field-error">{{ fieldErrors.deadline }}</p>
+                  </div>
+                </details>
+
+                <details ref="contextDetail" class="form-detail" @toggle="closeOtherDetails">
+                  <summary>
+                    <span>Description</span>
+                    <span class="detail-value">{{ taskForm.description.trim() ? 'Added' : 'Optional' }}</span>
+                  </summary>
+                  <div class="detail-content">
+                    <label class="field">
+                      <span class="visually-hidden">Description</span>
+                      <textarea v-model="taskForm.description" rows="3" maxlength="5000"></textarea>
+                    </label>
+                  </div>
+                </details>
+              </div>
+            </div>
+            <div class="options-sheet-footer">
+              <button type="button" @click="closeOptions">Done</button>
+            </div>
+          </dialog>
         </section>
 
         <section class="task-list" aria-labelledby="saved-tasks-title">
@@ -309,6 +975,10 @@ onMounted(checkServer)
               <p class="task-meta">
                 <span :class="task.type === 'day' ? 'tag-day' : 'tag-evening'">{{ task.type === 'day' ? 'Day' : 'Evening' }}</span>
                 <span v-if="task.type === 'evening' && task.energy_cost" class="tag-energy">{{ task.energy_cost === 'high' ? 'High' : 'Standard' }} energy</span>
+                <span v-if="task.type === 'evening' && task.priority && task.priority !== 'standard'" :class="task.priority === 'high' ? 'tag-priority-high' : 'tag-priority-low'">{{ priorityLabel(task.priority) }} priority</span>
+                <span v-if="task.recurrence_type !== 'one_time'" class="tag-repeat">{{ repeatLabel(task.recurrence_type, task.recurrence_rule) }}</span>
+                <span v-if="task.is_multi_session" class="tag-multi-session">Multi-session</span>
+                <span v-if="task.deadline_on" :class="task.deadline_is_hard ? 'tag-deadline-hard' : 'tag-deadline-soft'">{{ task.deadline_is_hard ? 'Hard' : 'Soft' }} deadline · {{ formatDeadline(task.deadline_on) }}</span>
               </p>
             </li>
           </ul>
