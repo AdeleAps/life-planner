@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
+
+live_dir="${PLANNER_LIVE_DIR:-/var/www/planner}"
+state_dir="${PLANNER_STATE_DIR:-$HOME/.local/state/planner-update}"
+backup_dir="${PLANNER_BACKUP_DIR:-$HOME/planner-backups}"
+stage_dir=""
+backup_file=""
+publish_started=false
+
+fail() {
+    printf 'Update stopped: %s\n' "$*" >&2
+    exit 1
+}
+
+cleanup() {
+    local status=$?
+    if [[ -n "$stage_dir" && -d "$stage_dir" ]]; then
+        rm -rf -- "$stage_dir"
+    fi
+    if (( status != 0 )); then
+        if [[ "$publish_started" == true ]]; then
+            printf 'The update stopped while publishing. Check the app before retrying.\n' >&2
+            printf 'Database backup: %s\n' "$backup_file" >&2
+        else
+            printf 'The live app was not changed.\n' >&2
+        fi
+    fi
+}
+trap cleanup EXIT
+
+for command in git tar rsync php composer npm sudo mariadb-dump gzip curl flock; do
+    command -v "$command" >/dev/null 2>&1 || fail "Missing command: $command"
+done
+
+[[ -d "$live_dir/.git" ]] || fail "Git checkout not found at $live_dir"
+[[ -f "$live_dir/backend/.env" ]] || fail "Planner settings not found at $live_dir/backend/.env"
+[[ -d "$live_dir/backend/storage" ]] || fail "Planner storage not found at $live_dir/backend/storage"
+[[ -d "$live_dir/frontend" ]] || fail "Planner frontend not found at $live_dir/frontend"
+
+mkdir -p "$state_dir" "$backup_dir"
+exec 9>"$state_dir/update.lock"
+flock -n 9 || fail 'Another Planner update is already running.'
+
+[[ "$(git -C "$live_dir" branch --show-current)" == main ]] || fail 'The Pi checkout must be on main.'
+[[ -z "$(git -C "$live_dir" status --porcelain --untracked-files=no)" ]] || fail 'The Pi checkout has tracked changes. Inspect git status before updating.'
+
+printf 'Checking GitHub for a new main commit…\n'
+git -C "$live_dir" fetch --quiet origin main
+git -C "$live_dir" merge-base --is-ancestor HEAD origin/main || fail 'GitHub main cannot be applied as a fast-forward.'
+previous_commit="$(git -C "$live_dir" rev-parse HEAD)"
+next_commit="$(git -C "$live_dir" rev-parse origin/main)"
+
+if [[ "$previous_commit" == "$next_commit" ]]; then
+    printf 'Planner is already current (%s).\n' "${next_commit:0:12}"
+    exit 0
+fi
+
+printf 'Preparing %s in a temporary folder…\n' "${next_commit:0:12}"
+stage_dir="$(mktemp -d "$state_dir/stage.XXXXXX")"
+git -C "$live_dir" archive "$next_commit" | tar -x -C "$stage_dir"
+mkdir -p "$stage_dir/backend/bootstrap/cache"
+ln -s "$live_dir/backend/.env" "$stage_dir/backend/.env"
+ln -s "$live_dir/backend/storage" "$stage_dir/backend/storage"
+
+(
+    cd "$stage_dir/backend"
+    composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
+    php artisan route:list --no-interaction >/dev/null
+)
+(
+    cd "$stage_dir/frontend"
+    npm ci
+    npm run build
+)
+
+database_name="$(
+    cd "$stage_dir/backend"
+    php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php"; $app->make(\Illuminate\Contracts\Console\Kernel::class)->bootstrap(); if (config("database.default") !== "mysql") { fwrite(STDERR, "Expected a MariaDB database.\n"); exit(1); } echo config("database.connections.mysql.database");'
+)"
+[[ -n "$database_name" ]] || fail 'The live database name is empty.'
+
+printf 'Backing up the database before publishing…\n'
+sudo -v
+backup_file="$backup_dir/planner-$(date +%Y%m%d-%H%M%S)-${next_commit:0:12}.sql.gz"
+if ! sudo mariadb-dump --single-transaction --quick --databases "$database_name" | gzip >"$backup_file"; then
+    rm -f -- "$backup_file"
+    fail 'Database backup failed.'
+fi
+[[ -s "$backup_file" ]] || fail 'Database backup is empty.'
+
+printf 'Publishing the prepared update…\n'
+publish_started=true
+git -C "$live_dir" merge --ff-only --quiet origin/main
+sudo rsync -a --delete "$stage_dir/backend/vendor/" "$live_dir/backend/vendor/"
+sudo mkdir -p "$live_dir/backend/public/assets"
+sudo rsync -a --delete "$stage_dir/frontend/dist/assets/" "$live_dir/backend/public/assets/"
+sudo rsync -a --exclude='/assets/' "$stage_dir/frontend/dist/" "$live_dir/backend/public/"
+(
+    cd "$live_dir/backend"
+    php artisan migrate --force --no-interaction
+    php artisan optimize:clear --no-interaction
+)
+sudo systemctl restart php8.4-fpm
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/health | grep -q '"status":"ok"' || fail 'The updated app did not pass its health check.'
+
+printf 'Planner updated to %s. Database backup: %s\n' "${next_commit:0:12}" "$backup_file"
