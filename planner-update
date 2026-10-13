@@ -9,6 +9,7 @@ backup_dir="${PLANNER_BACKUP_DIR:-$HOME/planner-backups}"
 deployed_file="$state_dir/deployed-commit"
 stage_dir=""
 backup_file=""
+db_options_file=""
 publish_started=false
 
 fail() {
@@ -18,6 +19,9 @@ fail() {
 
 cleanup() {
     local status=$?
+    if [[ -n "$db_options_file" ]]; then
+        rm -f -- "$db_options_file"
+    fi
     if [[ -n "$stage_dir" && -d "$stage_dir" ]]; then
         rm -rf -- "$stage_dir"
     fi
@@ -40,10 +44,14 @@ done
 [[ -f "$live_dir/backend/.env" ]] || fail "Planner settings not found at $live_dir/backend/.env"
 [[ -d "$live_dir/backend/storage" ]] || fail "Planner storage not found at $live_dir/backend/storage"
 [[ -d "$live_dir/frontend" ]] || fail "Planner frontend not found at $live_dir/frontend"
+[[ -w "$live_dir/backend/vendor" && -w "$live_dir/backend/public" ]] || fail 'The published vendor and public folders must be writable by this user.'
 
 mkdir -p "$state_dir" "$backup_dir"
 exec 9>"$state_dir/update.lock"
 flock -n 9 || fail 'Another Planner update is already running.'
+
+sudo -k
+sudo -n -l /usr/bin/systemctl restart php8.4-fpm >/dev/null 2>&1 || fail 'Passwordless permission to restart php8.4-fpm is missing. Install the narrow sudoers rule first.'
 
 [[ "$(git -C "$live_dir" branch --show-current)" == main ]] || fail 'The Pi checkout must be on main.'
 [[ -z "$(git -C "$live_dir" status --porcelain --untracked-files=no)" ]] || fail 'The Pi checkout has tracked changes. Inspect git status before updating.'
@@ -79,35 +87,64 @@ ln -s "$live_dir/backend/storage" "$stage_dir/backend/storage"
     npm run build
 )
 
+db_options_file="$(mktemp "$state_dir/database.XXXXXX")"
 database_name="$(
     cd "$stage_dir/backend"
-    php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php"; $app->make(\Illuminate\Contracts\Console\Kernel::class)->bootstrap(); if (config("database.default") !== "mysql") { fwrite(STDERR, "Expected a MariaDB database.\n"); exit(1); } echo config("database.connections.mysql.database");'
+    php -r '
+        require "vendor/autoload.php";
+        $app = require "bootstrap/app.php";
+        $app->make(\Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+        $connection = $app->make("db")->connection()->getConfig();
+        if (!in_array($connection["driver"], ["mysql", "mariadb"], true)) {
+            fwrite(STDERR, "Expected a MariaDB database.\n");
+            exit(1);
+        }
+        $quote = static fn ($value): string => "\"" . str_replace(
+            ["\\", "\"", "\n", "\r", "\t"],
+            ["\\\\", "\\\"", "\\n", "\\r", "\\t"],
+            (string) $value
+        ) . "\"";
+        $options = "[client]\nuser=" . $quote($connection["username"])
+            . "\npassword=" . $quote($connection["password"]);
+        if (!empty($connection["unix_socket"])) {
+            $options .= "\nsocket=" . $quote($connection["unix_socket"]);
+        } else {
+            $options .= "\nhost=" . $quote($connection["host"])
+                . "\nport=" . $quote($connection["port"]);
+        }
+        if (file_put_contents($argv[1], $options . "\n") === false) {
+            fwrite(STDERR, "Could not prepare database backup credentials.\n");
+            exit(1);
+        }
+        echo $connection["database"];
+    ' "$db_options_file"
 )"
 [[ -n "$database_name" ]] || fail 'The live database name is empty.'
 
 printf 'Backing up the database before publishing…\n'
-sudo -v
 backup_file="$backup_dir/planner-$(date +%Y%m%d-%H%M%S)-${next_commit:0:12}.sql.gz"
-if ! sudo mariadb-dump --single-transaction --quick --databases "$database_name" | gzip >"$backup_file"; then
+if ! mariadb-dump --defaults-file="$db_options_file" --single-transaction --quick --databases "$database_name" | gzip >"$backup_file"; then
     rm -f -- "$backup_file"
     fail 'Database backup failed.'
 fi
 [[ -s "$backup_file" ]] || fail 'Database backup is empty.'
+rm -f -- "$db_options_file"
+db_options_file=""
 
 printf 'Publishing the prepared update…\n'
 publish_started=true
 git -C "$live_dir" merge --ff-only --quiet origin/main
-sudo rsync -a --delete "$stage_dir/backend/vendor/" "$live_dir/backend/vendor/"
-sudo mkdir -p "$live_dir/backend/public/assets"
-sudo rsync -a --delete "$stage_dir/frontend/dist/assets/" "$live_dir/backend/public/assets/"
-sudo rsync -a --exclude='/assets/' "$stage_dir/frontend/dist/" "$live_dir/backend/public/"
-sudo chmod -R a+rX "$live_dir/backend/vendor" "$live_dir/backend/public"
+rsync -a --delete "$stage_dir/backend/vendor/" "$live_dir/backend/vendor/"
+mkdir -p "$live_dir/backend/public/assets"
+rsync -a --delete "$stage_dir/frontend/dist/assets/" "$live_dir/backend/public/assets/"
+rsync -a --exclude='/assets/' "$stage_dir/frontend/dist/" "$live_dir/backend/public/"
+chmod -R a+rX "$live_dir/backend/vendor" "$live_dir/backend/public"
 (
     cd "$live_dir/backend"
     php artisan migrate --force --no-interaction
     php artisan optimize:clear --no-interaction
 )
-sudo systemctl restart php8.4-fpm
+sudo -n /usr/bin/systemctl restart php8.4-fpm
 curl --fail --silent --show-error http://127.0.0.1:8080/ >/dev/null || fail 'The updated website did not pass its health check.'
 curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/health | grep -q '"status":"ok"' || fail 'The updated app did not pass its health check.'
 curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/tasks >/dev/null || fail 'The updated task list could not read the database.'
