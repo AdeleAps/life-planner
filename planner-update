@@ -6,6 +6,7 @@ umask 077
 live_dir="${PLANNER_LIVE_DIR:-/var/www/planner}"
 state_dir="${PLANNER_STATE_DIR:-$HOME/.local/state/planner-update}"
 backup_dir="${PLANNER_BACKUP_DIR:-$HOME/planner-backups}"
+deployed_file="$state_dir/deployed-commit"
 stage_dir=""
 backup_file=""
 publish_started=false
@@ -53,7 +54,7 @@ git -C "$live_dir" merge-base --is-ancestor HEAD origin/main || fail 'GitHub mai
 previous_commit="$(git -C "$live_dir" rev-parse HEAD)"
 next_commit="$(git -C "$live_dir" rev-parse origin/main)"
 
-if [[ "$previous_commit" == "$next_commit" ]]; then
+if [[ "$previous_commit" == "$next_commit" && -f "$deployed_file" && "$(cat "$deployed_file")" == "$next_commit" ]]; then
     printf 'Planner is already current (%s).\n' "${next_commit:0:12}"
     exit 0
 fi
@@ -106,4 +107,5 @@ sudo rsync -a --exclude='/assets/' "$stage_dir/frontend/dist/" "$live_dir/backen
 sudo systemctl restart php8.4-fpm
 curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/health | grep -q '"status":"ok"' || fail 'The updated app did not pass its health check.'
 
+printf '%s\n' "$next_commit" >"$deployed_file"
 printf 'Planner updated to %s. Database backup: %s\n' "${next_commit:0:12}" "$backup_file"

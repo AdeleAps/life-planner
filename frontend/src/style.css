@@ -121,6 +121,14 @@ textarea:focus-visible {
   letter-spacing: -0.07em;
 }
 
+.brand-update-spark {
+  width: 16px;
+  height: 16px;
+  align-self: flex-start;
+  margin: 3px 0 0 -6px;
+  color: #f7bc16;
+}
+
 .main-content {
   width: min(100% - 32px, 820px);
   margin: 0 auto;

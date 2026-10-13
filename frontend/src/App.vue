@@ -2251,6 +2251,9 @@ onBeforeUnmount(() => {
       <button class="brand-lockup" type="button" aria-label="Planner home" @click="showTomorrow">
         <img class="brand-flower" src="/sunflower.svg?v=2" alt="" />
         <span class="wordmark">Planner</span>
+        <svg class="brand-update-spark" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+          <path d="M10 1.5 12.2 7.8 18.5 10l-6.3 2.2L10 18.5l-2.2-6.3L1.5 10l6.3-2.2L10 1.5Z" fill="currentColor" />
+        </svg>
       </button>
       <button v-if="showResetButton && activeView === 'tomorrow'" class="test-reset-button" type="button"
         :disabled="resetBusy" @click="resetTestDay">{{ resetBusy ? 'Resetting…' : 'Reset' }}</button>
