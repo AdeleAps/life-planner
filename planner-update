@@ -67,11 +67,13 @@ ln -s "$live_dir/backend/.env" "$stage_dir/backend/.env"
 ln -s "$live_dir/backend/storage" "$stage_dir/backend/storage"
 
 (
+    umask 022
     cd "$stage_dir/backend"
     composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction
     php artisan route:list --no-interaction >/dev/null
 )
 (
+    umask 022
     cd "$stage_dir/frontend"
     npm ci
     npm run build
@@ -99,13 +101,16 @@ sudo rsync -a --delete "$stage_dir/backend/vendor/" "$live_dir/backend/vendor/"
 sudo mkdir -p "$live_dir/backend/public/assets"
 sudo rsync -a --delete "$stage_dir/frontend/dist/assets/" "$live_dir/backend/public/assets/"
 sudo rsync -a --exclude='/assets/' "$stage_dir/frontend/dist/" "$live_dir/backend/public/"
+sudo chmod -R a+rX "$live_dir/backend/vendor" "$live_dir/backend/public"
 (
     cd "$live_dir/backend"
     php artisan migrate --force --no-interaction
     php artisan optimize:clear --no-interaction
 )
 sudo systemctl restart php8.4-fpm
+curl --fail --silent --show-error http://127.0.0.1:8080/ >/dev/null || fail 'The updated website did not pass its health check.'
 curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/health | grep -q '"status":"ok"' || fail 'The updated app did not pass its health check.'
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/tasks >/dev/null || fail 'The updated task list could not read the database.'
 
 printf '%s\n' "$next_commit" >"$deployed_file"
 printf 'Planner updated to %s. Database backup: %s\n' "${next_commit:0:12}" "$backup_file"
